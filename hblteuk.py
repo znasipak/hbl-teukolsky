@@ -19,16 +19,20 @@ for i in range(1,dsize):
         j += 2
 
 nodes_16=ch.chebpts1(16)
-Tmat0_16=ch.chebvander(nodes_16,15)
+Tmat0_16=ch.chebvander(nodes_16, 15)
 Tmat1_16 = xp.matmul(Tmat0_16, D100[:16,:16])
 Tmat2_16 = xp.matmul(Tmat1_16, D100[:16,:16])
 Tmat0Inv_16 = xp.linalg.inv(Tmat0_16)
+bc1_16 = xp.array(ch.chebvander(-1, 15))
+bc2_16 = xp.matmul(bc1_16, D100[:16,:16])
 
 nodes_32=ch.chebpts1(32)
-Tmat0_32=ch.chebvander(nodes_32,31)
+Tmat0_32=ch.chebvander(nodes_32, 31)
 Tmat1_32 = xp.matmul(Tmat0_32, D100[:32,:32])
 Tmat2_32 = xp.matmul(Tmat1_32, D100[:32,:32])
 Tmat0Inv_32 = xp.linalg.inv(Tmat0_32)
+bc1_32 = xp.array(ch.chebvander(-1, 31))
+bc2_32 = xp.matmul(bc1_32, D100[:32,:32])
 
 def default_smax():
     return 0.5
@@ -178,9 +182,18 @@ class FullyTransformedRadialSolution(TransformedRadialSolution):
         alpha = self.transformation[4](sigma, self.s, self.l, self.frequency)
         beta = dsigma_dx*self.transformation[5](sigma, self.s, self.l, self.frequency)
         return alpha*self.mch.chebeval(x_of_sigma) + beta*self.mch_deriv.chebeval(x_of_sigma)
+    
+def pSchwFull(sigma):
+    return sigma**2*(1 - sigma)
+
+def qSchwFull(sigma, s, omega):
+    return 2*sigma*(1+s) - sigma**2*(3 + s - 8j*omega) - 4j*omega 
+
+def uSchwFull(sigma, s, lam, omega):
+    return -4j*omega*(4j*omega + s) - (1 - 4j*omega)*(1 + s - 4j*omega)*sigma - lam
         
 class HyperboloidalTeukolsky:
-    def __init__(self, s, l, omega):
+    def __init__(self, s, l, omega, plus_minus_s = False):
         self.s = s
         self.l = l
         self.frequency = omega
@@ -197,18 +210,85 @@ class HyperboloidalTeukolsky:
         
         self.domain = {'In': [default_smin(self.frequency), 1], 'Up': [0, default_smax()]}
         self.spinsign = {'In': -1, 'Up': 1}
+      
+    @staticmethod
+    def p_hbl(sigma):
+        return sigma**2*(1 - sigma)
+    
+    @staticmethod
+    def q_hbl(sigma, s, omega):
+        return 2*sigma*(1+s) - sigma**2*(3 + s - 8j*omega) - 4j*omega 
+
+    @staticmethod
+    def u_hbl(sigma, s, lam, omega):
+        return -4j*omega*(4j*omega + s) - (1 - 4j*omega)*(1 + s - 4j*omega)*sigma - lam
+    
+    @staticmethod
+    def xOfSigma(sigma, smin, smax):
+        return (2*sigma - (smax + smin))/(smax - smin)
+
+    @staticmethod
+    def sigmaOfX(x, smin, smax):
+        return ((smax - smin)*x + smax + smin)/2
+
+    @staticmethod
+    def dxOfSigma(smin, smax):
+        return 2/(smax - smin)
+    
+    def solve_hyperboloidal_coeffs_domain(self, s, psi0, dpsi0, domain, bc, n=16):
+        [smin, smax] = domain
+    
+        if n == 16:
+            nodes = nodes_16
+            Tmat0 = Tmat0_16
+            Tmat1 = Tmat1_16
+            Tmat2 = Tmat2_16
+            bc1 = bc1_16
+            bc2 = bc2_16
+        elif n == 32:
+            nodes = nodes_32
+            Tmat0 = Tmat0_32
+            Tmat1 = Tmat1_32
+            Tmat2 = Tmat2_32
+            bc1 = bc1_32
+            bc2 = bc2_32
+        else:
+            D = D100[:n,:n]
+            nodes = ch.chebpts1(n)
+            Tmat0 = xp.array(ch.chebvander(nodes, n-1))
+            Tmat1 = xp.matmul(Tmat0, D)
+            Tmat2 = xp.matmul(Tmat1, D)
+            bc1 = xp.array(ch.chebvander(-1, n - 1))
+            bc2 = xp.matmul(bc1, D)
+    
+        sigmaNodes = self.sigmaOfX(nodes, smin, smax)
+        dsigmadx = 1./self.dxOfSigma(smin, smax)
+        Pmat = xp.diag(self.p_hbl(sigmaNodes))
+        Qmat = xp.diag(dsigmadx*self.q_hbl(sigmaNodes, s, self.frequency))
+        Umat = xp.diag(dsigmadx**2*self.u_hbl(sigmaNodess, la, self.frequency))
+
+        Mmat = xp.matmul(Pmat, Tmat2) + xp.matmul(Qmat, Tmat1) + xp.matmul(Umat, Tmat0)
+        Mmat[0] = bc1
+        Mmat[1] = bc2
+
+        source = xp.zeros([n,1], dtype=complex)
+        source[0,0] = psi0
+        source[1,0] = dpsi0
+
+        coeffs = xp.matmul(xp.linalg.inv(Mmat), source)
+        return coeffs
         
-    def solve_teukolsky(self, bc=['In','Up'], use_ts_transform=True, save_negative_s=False, cutoff=0, subdomains=0):
+    def solve_teukolsky(self, bc=['In','Up'], use_ts_transform=True, cutoff=[0,1], subdomains=0):
         if isinstance(bc, list) or isinstance(bc, np.ndarray):
             for condition in bc:
-                self.solve_teukolsky(condition, use_ts_transform=use_ts_transform, save_negative_s=save_negative_s, cutoff=cutoff, subdomains=subdomains)
+                self.solve_teukolsky(condition, use_ts_transform=use_ts_transform, cutoff=cutoff, subdomains=subdomains)
             return None
             
         if bc not in self.bcs:
             print('ERROR: Invalid key type {}'.format(bc))
             return None
         
-        self.coeffs[bc], self.domains[bc] = multichebteuk(self.s, self.l, self.frequency, bc=bc)
+        #self.coeffs[bc], self.domains[bc] = multichebteuk(self.s, self.l, self.frequency, bc=bc)
         
         if use_ts_transform:
             s = self.spinsign[bc]*abs(self.s)
@@ -222,10 +302,16 @@ class HyperboloidalTeukolsky:
         else:
             boundaryNum = subdomains
     
-        boundaryNode = -1
+        #boundaryNode = -1
+        if isinstance(cutoff, list) or isinstance(cutoff, np.ndarray):
+            [mincut, maxcut] = cutoff
+        else:
+            mincut = cutoff
+            maxcut = cutoff
+            
         if bc == 'Up':
-            if cutoff > 0 and cutoff < 1:
-                smax = cutoff
+            if maxcut > 0 and maxcut < 1:
+                smax = maxcut
             a1 = a1sigma0(s, la, self.frequency)
             a2 = a2sigma0(s, la, self.frequency)
             smin = 0.5*xp.min(np.abs([1/a1, a1/a2]))
@@ -233,8 +319,8 @@ class HyperboloidalTeukolsky:
                 smin = smax
                 boundaryNum = 1
         elif bc == 'In':
-            if cutoff > 0 and cutoff < 1:
-                smin = cutoff
+            if mincut > 0 and mincut < 1:
+                smin = mincut
             b1 = b1sigma1(s, la, self.frequency)
             smax = 1 - 1/np.abs(b1)
             if smax < smin:
@@ -264,8 +350,9 @@ class HyperboloidalTeukolsky:
             psi0 = 2*np.exp(-4j*self.frequency)
         else:
             psi0 = 1.
-        dpsi0 = -uode(boundaryNode)*psi0/qode(boundaryNode)
-        coeffs = chebode(pode, qode, uode, boundaryNode, psi0, dpsi0, 32).flatten()
+            
+        dpsi0 = -uode(-1)*psi0/qode(-1)
+        coeffs = chebode(pode, qode, uode, -1, psi0, dpsi0, 32).flatten()
         self.coeffs[bc] = np.empty(boundaryNum, dtype=object)
     
         i=0
@@ -296,7 +383,7 @@ class HyperboloidalTeukolsky:
             def uode(x):
                 return dsigmadx**2*uSchwFull(sigmaOfX(x, smin, smax), s, la, self.frequency)
 
-            coeffs = chebode(pode, qode, uode, boundaryNode, psi0, dpsi0, 16).flatten()
+            coeffs = chebode(pode, qode, uode, -1, psi0, dpsi0, 16).flatten()
             if self.spinsign[bc]*self.s == -2:
                 if self.s == -2:
                     self.coeffs[bc][i] = flip_plus_2_teuk(self.l, self.frequency, coeffs, [smin, smax])
@@ -315,6 +402,12 @@ class HyperboloidalTeukolsky:
         transformations = [sigma_of_r, dr_dsigma, alpha_teuk, beta_teuk, alpha_teuk_deriv, beta_teuk_deriv]
         self.teukolsky[bc] = FullyTransformedRadialSolution(self.s, self.l, self.frequency, bc, self.mch[bc], transformations)
         
+    def test_accuracy(self, bc):
+        if self.mch[bc] == None:
+            print('ERROR: No solution available for {}'.format(bc))
+        else:
+            return 1   
+    
     def get_hyperboloidal(self, bc=None):
         if bc == None:
             return self.hbl
