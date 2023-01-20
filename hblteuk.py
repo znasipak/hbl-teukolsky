@@ -1,50 +1,107 @@
-use_gpu = False
+# hblteuk.py
+"""
+Teukolsky solvers using hyperboloidal slicing, compactification, and numerical collocation
+Author: Zachary Nasipak
+"""
+
+# Load necessary modules
+# use_gpu = False # No GPU capability at the moment, but maybe in the future?
+# if use_gpu:
+#     import cupy as xp
+# else:
+#     import numpy as xp
+    
 import numpy as np
-if use_gpu:
-    import cupy as xp
-else:
-    import numpy as xp
+import numpy as xp # This is leaving open the introduction of GPUs in the future
 import numpy.polynomial.chebyshev as ch
-from numba import jit, njit
-import numba as nb
-import scipy
+#import scipy
 import time
 
-dsize = 500
-D100 = xp.zeros([dsize,dsize], np.float32)
-j = 1
-while j < dsize:
-    D100[0][j] = j
-    j += 2
-for i in range(1,dsize):
-    j = i + 1
-    while j < dsize:
-        D100[i][j] = 2*j
-        j += 2
+"""
+GLOBAL VARIABLES
+I precompute some matrices and arrays corresponding to the Chebyshev polynomials
+and the collocation points at the Chebyshev nodes
+"""
 
-nodes_16=ch.chebpts1(16)
-Tmat0_16=ch.chebvander(nodes_16, 15)
-Tmat1_16 = xp.matmul(Tmat0_16, D100[:16,:16])
-Tmat2_16 = xp.matmul(Tmat1_16, D100[:16,:16])
-Tmat0Inv_16 = xp.linalg.inv(Tmat0_16)
-bc1_16 = xp.array(ch.chebvander(-1, 15))
-bc2_16 = xp.matmul(bc1_16, D100[:16,:16])
+# construct the differential matrix '_HBLTEUK_D100' that gives the derivative of a Chebyshev series
+_HBLTEUK_dsize = 500
+_HBLTEUK_D100 = xp.zeros([_HBLTEUK_dsize,_HBLTEUK_dsize], np.float32)
+_HBLTEUK_j = 1
+while _HBLTEUK_j < _HBLTEUK_dsize:
+    _HBLTEUK_D100[0][_HBLTEUK_j] = _HBLTEUK_j
+    _HBLTEUK_j += 2
+for _HBLTEUK_i in range(1,_HBLTEUK_dsize):
+    _HBLTEUK_j = _HBLTEUK_i + 1
+    while _HBLTEUK_j < _HBLTEUK_dsize:
+        _HBLTEUK_D100[_HBLTEUK_i][_HBLTEUK_j] = 2*_HBLTEUK_j
+        _HBLTEUK_j += 2
 
-nodes_32=ch.chebpts1(32)
-Tmat0_32=ch.chebvander(nodes_32, 31)
-Tmat1_32 = xp.matmul(Tmat0_32, D100[:32,:32])
-Tmat2_32 = xp.matmul(Tmat1_32, D100[:32,:32])
-Tmat0Inv_32 = xp.linalg.inv(Tmat0_32)
-bc1_32 = xp.array(ch.chebvander(-1, 31))
-bc2_32 = xp.matmul(bc1_32, D100[:32,:32])
+# I precompute everything with N = 16 and N = 32 points, since these are the most common sampling numbers I use
+_HBLTEUK_nodes_16=ch.chebpts1(16)
+_HBLTEUK_Tmat0_16=ch.chebvander(_HBLTEUK_nodes_16, 15)
+_HBLTEUK_Tmat1_16 = xp.matmul(_HBLTEUK_Tmat0_16, _HBLTEUK_D100[:16,:16])
+_HBLTEUK_Tmat2_16 = xp.matmul(_HBLTEUK_Tmat1_16, _HBLTEUK_D100[:16,:16])
+_HBLTEUK_Tmat0Inv_16 = xp.linalg.inv(_HBLTEUK_Tmat0_16)
+_HBLTEUK_bc1_16 = xp.array(ch.chebvander(-1, 15))
+_HBLTEUK_bc2_16 = xp.matmul(_HBLTEUK_bc1_16, _HBLTEUK_D100[:16,:16])
 
-#@njit
-def default_smax():
-    return 0.5
+_HBLTEUK_nodes_32=ch.chebpts1(32)
+_HBLTEUK_Tmat0_32=ch.chebvander(_HBLTEUK_nodes_32, 31)
+_HBLTEUK_Tmat1_32 = xp.matmul(_HBLTEUK_Tmat0_32, _HBLTEUK_D100[:32,:32])
+_HBLTEUK_Tmat2_32 = xp.matmul(_HBLTEUK_Tmat1_32, _HBLTEUK_D100[:32,:32])
+_HBLTEUK_Tmat0Inv_32 = xp.linalg.inv(_HBLTEUK_Tmat0_32)
+_HBLTEUK_bc1_32 = xp.array(ch.chebvander(-1, 31))
+_HBLTEUK_bc2_32 = xp.matmul(_HBLTEUK_bc1_32, _HBLTEUK_D100[:32,:32])
 
-#@njit
-def default_smin(omega):
-    return 0.03*omega**(2/3)
+"""
+class MultiChebyshev
+This class joins together M Chebyshev series f_i of length N that are joined on adjacent domains [x_i, x_{i+1}] 
+for x_i \in (x0, x1, ..., x_M). 
+
+For example, consider M = 3 Chebyshev series of length 3: 
+    f_0(x) = \sum_{n=0}^2 c_{0,n} T_n(X_0(x)), x \in [x_0, x_1]
+    f_1(x) = \sum_{n=0}^2 c_{1,n} T_n(X_1(x)), x \in [x_1, x_2]
+    f_2(x) = \sum_{n=0}^2 c_{2,n} T_n(X_2(x)), x \in [x_2, x_3]
+    X_i(x) = (2*x - x_i - x_{i+1})/(x_{i+1} - x_{i})
+Then MultiChebyshev joins together these solutions to create f(x), where x is no valid for [x_0, x_3]
+
+Methods
+-------
+
+    __init__(coeffList, domainList)
+        Input
+        -----
+        - coeffList: (array) (M x N)-dimensional numpy array of the Chebyshev coefficients c_{i, n}. In the above 
+            example the coeffList would have the form
+                [[c_{0,0}, c_{0,1}, c_{0,2}], 
+                 [c_{1,0}, c_{1,1}, c_{1,2}],
+                 [c_{2,0}, c_{2,1}, c_{2,2}]]
+        - domainList: (array) M-dimensional numpy array of the subdomain boundaries x_i. In the above example
+            the domainList would have the form
+                [x_0, x_1, x_2, x_3]
+    
+    chebeval(x, deriv=0)
+        Input
+        -----
+        - x: (float or array) point(s) at which we evaluate f(x)
+        - deriv: (int) Setting deriv = i > 0 takes the ith-derivative of f
+        
+        Output
+        ------
+          (float or array) f(x) or its ith-derivative
+        
+    deriv(i)
+        Input
+        -----
+        - i: (int) the ith-derivative of f(x)
+        
+        Output
+        ------
+          (MultiChebyshev) \partial_x^i f(x)
+          
+    __call__(sigma, deriv=0)
+        This is equivalent to calling chebeval
+"""
 
 class MultiChebyshev:
     def __init__(self, coeffList, domainList):
@@ -60,28 +117,28 @@ class MultiChebyshev:
         else:
             self.sorted_chebylist = self.chebylist
             self.sorted_domains = self.domains
+    
+    def __deriv_list(self, m):
+        derivlist = np.empty(self.n_cs, dtype=object)
+        for i in range(self.n_cs):
+            derivlist[i] = self.sorted_chebylist[i].deriv(m)
+            
+        return derivlist
             
     def chebeval(self, sigma, deriv=0):
         if isinstance(sigma, np.ndarray):
             if deriv == 0:
                 return multi_chebyshev_vec_no_deriv(sigma, self.sorted_chebylist, self.sorted_domains)
             else:
-                return multi_chebyshev_vec_no_deriv(sigma, self.deriv_list(deriv), self.sorted_domains)
+                return multi_chebyshev_vec_no_deriv(sigma, self.__deriv_list(deriv), self.sorted_domains)
         else:
             if deriv == 0:
                 return multi_chebyshev_no_deriv(sigma, self.sorted_chebylist, self.sorted_domains)
             else:
-                return multi_chebyshev_no_deriv(sigma, self.deriv_list(deriv), self.sorted_domains)
-    
-    def deriv_list(self, m):
-        derivlist = np.empty(self.n_cs, dtype=object)
-        for i in range(self.n_cs):
-            derivlist[i] = self.sorted_chebylist[i].deriv(m)
-            
-        return derivlist
+                return multi_chebyshev_no_deriv(sigma, self.__deriv_list(deriv), self.sorted_domains)
     
     def deriv(self, m):
-        D = D100[:self.n_sample-1, :self.n_sample-1] # differential matrix
+        D = _HBLTEUK_D100[:self.n_sample-1, :self.n_sample-1] # differential matrix
         derivcoefflist = np.empty((self.n_cs, self.n_sample - 1), dtype=xp.cdouble)
         for i in range(self.n_cs):
             derivcoefflist[i] = self.coeffs[i][:-1] # throw away last coefficient because you lose one-order in the series for each derivative
@@ -93,6 +150,75 @@ class MultiChebyshev:
         
     def __call__(self, sigma, deriv=0):
         return self.chebeval(sigma, deriv)
+
+def multi_chebyshev_no_deriv(sigma, funcs, domains):
+    # search to see if sigma is within a certain subdomain
+    # If it is in the ith subdomain, then evaluate the chebyshev series
+    # that represents the solution in that subdomain
+    for i in range(funcs.size):
+        if sigma <= domains[i+1] and sigma >= domains[i]:
+            return funcs[i](sigma)
+    if sigma > domains[-1]:
+        return funcs[-1](sigma)
+    if sigma < domains[0]:
+        return funcs[0](sigma)
+    return 0
+
+def multi_chebyshev_vec_no_deriv(sigmaList, funcs, domains):
+    # vectorized version of multi_chebyshev_no_deriv for sigma
+    chebevalList = xp.empty(sigmaList.size, dtype=complex)
+    for i,sigma in enumerate(sigmaList):
+        chebevalList[i] = multi_chebyshev_no_deriv(sigma, funcs, domains)
+    
+    return chebevalList
+
+"""
+class HyperboloidalTeukolskySolution
+This class acts as a container for the hyperboloidal-sliced, compactified, and rescaled Teukolsky solutions
+$\Psi(\sigma) = R(\sigma)/Z(\sigma)$
+
+Methods
+-------
+
+    __init__(s, l, omega, bc, mch)
+        Input
+        -----
+        - s: (int) spin-weight of the solution
+        - l: (int) spheroidal multipole mode number of the solution
+        - omega: (float) frequency of the solution
+        - bc: (str) boundary conditions that generated the solution. 
+            Common options include 'In' or 'Up'.
+        - mch: (MultiChebyshev) An instance of MultiChebyshev that holds the underlying function that 
+            represents the Teukolsky solutions
+            
+    sol(sigma)
+        Input
+        -----
+        - sigma: (float or array) compactified radial coordinate
+        
+        Output
+        ------
+          (float or array) Solution evaluated at sigma \Psi(\sigma)
+    
+    deriv(sigma)
+        Input
+        -----
+        - sigma: (float or array) compactified radial coordinate
+        
+        Output
+        ------
+          (float or array) Derivative of the solution \partial_\sigma \Psi(\sigma)
+          
+    __call__(sigma, deriv=0)
+        Input
+        -----
+        - sigma: (float or array) compactified radial coordinate
+        - deriv: (int) Setting deriv = i > 0 takes the ith-derivative of the solution
+        
+        Output
+        ------
+          (float or array) \partial_\sigma^{deriv} \Psi(\sigma)
+"""
     
 class HyperboloidalTeukolskySolution:    
     def __init__(self, s, l, omega, bc, mch):
@@ -109,28 +235,86 @@ class HyperboloidalTeukolskySolution:
         self.domains = mch.domains
         self.coeffs = mch.coeffs
         self.mch_deriv = mch.deriv(1)
+
+        if self.domains[0] < self.domains[-1]:
+            self.domain = [self.domains[0], self.domains[-1]]
+        else:
+            self.domain = [self.domains[-1], self.domains[0]]
+    
+    def linspace_var(self, n=100):
+        return xp.linspace(self.domain[0], self.domain[1], n)
+    
+    def linspace(self, n=100):
+        sigma = self.linspace_var(n)
+        return [sigma, self.sol(sigma)]
         
-        self.domain = [self.domains[0], self.domains[-1]]
-        
-    def sol_func(self, sigma):
+    def sol(self, sigma):
         return self.mch.chebeval(sigma)
     
-    def deriv_func(self, sigma):
+    def deriv(self, sigma):
         return self.mch_deriv.chebeval(sigma)
     
     def _repr_latex_(self):
         bc_str = str(self.bc)
         sub_str = "{}, {}, {:.2f}".format(self.s, self.l, self.frequency)
         domain_str = "[{:.2f}, {:.2f}]".format(self.domain[0], self.domain[1])
-        return r'{$\Psi^\mathrm{'+bc_str+'}_{sl\omega}(\sigma; '+sub_str+')$, $\sigma \in '+domain_str+' $'
+        return r'{$\psi^\mathrm{'+bc_str+'}_{sl\omega}(\sigma; '+sub_str+')$, $\sigma \in '+domain_str+' $}'
     
     def __call__(self, sigma, deriv=0):
         if deriv == 0:
-            return self.sol_func(sigma)
+            return self.sol(sigma)
         elif deriv == 1:
-            return self.deriv_func(sigma)
+            return self.deriv(sigma)
         else:
             self.mch(sigma, deriv)
+            
+"""
+class RadialTeukolskySolution
+This class acts as a container for the Teukolsky solutions in traditional Boyer-Lindquist coordinates
+$R(r) = Z(\sigma(r)) \Psi(\sigma(r))$
+
+Methods
+-------
+
+    __init__(s, l, omega, bc, mch)
+        Input
+        -----
+        - s: (int) spin-weight of the solution
+        - l: (int) spheroidal multipole mode number of the solution
+        - omega: (float) frequency of the solution
+        - bc: (str) boundary conditions that generated the solution. 
+            Common options include 'In' or 'Up'.
+        - mch: (MultiChebyshev) An instance of MultiChebyshev that holds the underlying function that 
+            represents the Teukolsky solutions
+            
+    sol(r)
+        Input
+        -----
+        - r: (float or array) Boyer-Lindquist radial coordinate
+        
+        Output
+        ------
+          (float or array) R(r)
+    
+    deriv(r)
+        Input
+        -----
+        - r: (float or array) Boyer-Lindquist radial coordinate
+        
+        Output
+        ------
+          (float or array) \partial_r R(r)
+          
+    __call__(r, deriv=0)
+        Input
+        -----
+        - r: (float or array) Boyer-Lindquist radial coordinate
+        - deriv: (int) Setting deriv = i > 0 takes the ith-derivative of the solution
+        
+        Output
+        ------
+          (float or array) R(r) or \partial_r R(r)
+"""
             
 class RadialTeukolskySolution:    
     def __init__(self, s, l, omega, bc, mch):
@@ -185,13 +369,25 @@ class RadialTeukolskySolution:
     
     def g_teukolsky_transformation_deriv(self, r):
         return (-2/r**2)*r**(-2*self.s - 1)*np.exp(1j*self.frequency*r)*(1 - 2./r)**(-self.s)*(2./r*(1 - 2./r))**(-2j*self.frequency)
+    
+    def linspace_var(self, cutoff, n=100):
+        rmin, rmax = self.domain
+        if rmax == np.inf:
+            rmax = cutoff
+        if rmin == 2.:
+            rmin = cutoff
+        return xp.linspace(rmin, rmax, n)
+    
+    def linspace(self, cutoff, n=100):
+        r = self.linspace_var(cutoff, n)
+        return [r, self.sol(r)]
         
-    def sol_func(self, r):
+    def sol(self, r):
         sigma = self.sigma_of_r(r)
         alpha = self.f_teukolsky_transformation(r)
         return alpha*self.mch.chebeval(sigma)
     
-    def deriv_func(self, r):
+    def deriv(self, r):
         sigma = self.sigma_of_r(r)
         alpha = self.f_teukolsky_transformation_deriv(r)
         beta = self.g_teukolsky_transformation_deriv(r)
@@ -201,45 +397,35 @@ class RadialTeukolskySolution:
         bc_str = str(self.bc)
         sub_str = "{}, {}, {:.2f}".format(self.s, self.l, self.frequency)
         domain_str = "[{:.2f}, {:.2f}]".format(self.domain[0], self.domain[1])
-        return r'{$R^\mathrm{'+bc_str+'}_{sl\omega}(r; '+sub_str+')$, $r \in '+domain_str+' $'
+        return r'{$R^\mathrm{'+bc_str+'}_{sl\omega}(r; '+sub_str+')$, $r \in '+domain_str+' $}'
     
     def __call__(self, r, deriv=0):
         if deriv == 0:
-            return self.sol_func(r)
+            return self.sol(r)
         elif deriv == 1:
-            return self.deriv_func(r)
+            return self.deriv(r)
         else:
             print('Error')
-            
 
-#@njit
-def pSchwFull(sigma):
-    return sigma**2*(1 - sigma)
+"""
+class TeukolskySolver
+This class generates Teukolsky solutions using hyperboloidal slicing, radial compactification, and 
+Chebyshev collocation methods across a series of adjacent subdomains. Homogeneous solutions can
+be constructed to either satisfy the traditional 'In' or 'Up' boundary conditions defined in the
+literature (e.g., see Sasaki and Tagoshi, Living Reviews in Relativity). This serves as a base
+class for RadialTeukolsky and HyperboloidalTeukolsky, and should not be directly called/accessed
+by the user.
 
-#@njit
-def qSchwFull(sigma, s, omega):
-    return 2*sigma*(1+s) - sigma**2*(3 + s - 8j*omega) - 4j*omega 
+Methods
+-------
 
-#@njit
-def uSchwFull(sigma, s, lam, omega):
-    return -4j*omega*(4j*omega + s) - (1 - 4j*omega)*(1 + s - 4j*omega)*sigma - lam
-
-def fTSp2SchwFull(sigma, lam, omega):
-    return (2*omega)**(-4)*1/16.*((256j)*omega**3*sigma - lam*(2 + lam)*(-1 + sigma)*sigma**4 + 256*omega**4*(1 + sigma) + (4j)*omega*sigma**3*(lam*(-6 + 5*sigma) + sigma*(-5 + 6*sigma)) + 16*omega**2*sigma**2*(lam*(-3 + 2*sigma**2) + sigma*(-5 + sigma + 3*sigma**2)))/(1 - sigma)**3
-
-#@njit
-def gTSp2SchwFull(sigma, lam, omega):
-    return (2*omega)**(-4)*((-1j/4)*omega*sigma**2*(16*omega**2 + sigma**2*(2*lam*(-1 + sigma) + sigma*(-2 + 3*sigma))))/(-1 + sigma)**3
-
-#@njit
-def fTSm2SchwFull(sigma, lam, omega):
-    Omega = 1j*omega
-    return (16*(-128*Omega**3 + 256*Omega**4 + lam*(2 + lam)*(-1 + sigma)**2*sigma**2 + 4*Omega*sigma*(sigma*(-3 + 5*sigma) + lam*(-2 + sigma + sigma**2)) - 16*Omega**2*(lam*(-1 + sigma)*(1 + 2*sigma**2) + sigma*(-3 + sigma*(3 + sigma*(-2 + 3*sigma))))))/sigma**6/(128*Omega*(-1 + 2*Omega)*(-1 + 4*Omega)*(1 + 4*Omega))
-
-#@njit
-def gTSm2SchwFull(sigma, lam, omega):
-    Omega = 1j*omega
-    return (64*Omega*(-1 + sigma)*(-16*Omega**2 + 2*lam*(-1 + sigma)*sigma**2 + sigma**3*(-2 + 3*sigma)))/sigma**6/(128*Omega*(-1 + 2*Omega)*(-1 + 4*Omega)*(1 + 4*Omega))
+    __init__(s, l, omega)
+        Input
+        -----
+        - s: (int) spin-weight of the solution
+        - l: (int) spheroidal multipole mode number of the solution
+        - omega: (float) frequency of the solution
+"""
 
 class TeukolskySolver:
     def __init__(self, s, l, omega):
@@ -263,7 +449,7 @@ class TeukolskySolver:
         self.coeffs[self.s] = dict.fromkeys(self.bcs)
         self.coeffs[-self.s] = dict.fromkeys(self.bcs)
         
-        self.domain = {'In': [default_smin(self.frequency), 1.], 'Up': [0., default_smax()]}
+        self.domain = dict.fromkeys(self.bcs)
         self.spinsign = {'In': -1, 'Up': 1}
     
     @staticmethod
@@ -306,19 +492,19 @@ class TeukolskySolver:
     def gTS_minus_to_plus_2(sigma, lam, omega):
         return (64j*omega*(-1 + sigma)*(16*omega**2 + 2*lam*(-1 + sigma)*sigma**2 + sigma**3*(-2 + 3*sigma)))/sigma**6/(128j*omega*(-1 + 2j*omega)*(-1 + 4j*omega)*(1 + 4j*omega))
     
-    @staticmethod
+    @staticmethod # NOT YET IMPLEMENTED!!!!
     def fTS_plus_to_minus_1(sigma, lam, omega):
         return 1.
     
-    @staticmethod
+    @staticmethod # NOT YET IMPLEMENTED!!!!
     def gTS_plus_to_minus_1(sigma, lam, omega):
         return 1.
     
-    @staticmethod
+    @staticmethod # NOT YET IMPLEMENTED!!!!
     def fTS_minus_to_plus_1(sigma, lam, omega):
         return 1.
     
-    @staticmethod
+    @staticmethod # NOT YET IMPLEMENTED!!!!
     def gTS_minus_to_plus_1(sigma, lam, omega):
         return 1.
     
@@ -329,6 +515,7 @@ class TeukolskySolver:
     @staticmethod
     def rOfSigma(sigma):
         return 2./sigma
+        
     
     def __flip_spin_coeffs(self, clist, dlist):
         s = -abs(self.s)
@@ -336,17 +523,17 @@ class TeukolskySolver:
         domain_num, n = clist.shape
     
         if n == 16:
-            nodes = nodes_16
-            Tmat0 = Tmat0_16
-            Tmat1 = Tmat1_16
-            Tmat0Inv = Tmat0Inv_16
+            nodes = _HBLTEUK_nodes_16
+            Tmat0 = _HBLTEUK_Tmat0_16
+            Tmat1 = _HBLTEUK_Tmat1_16
+            Tmat0Inv = _HBLTEUK_Tmat0Inv_16
         elif n == 32:
-            nodes = nodes_32
-            Tmat0 = Tmat0_32
-            Tmat1 = Tmat1_32
-            Tmat0Inv = Tmat0Inv_32
+            nodes = _HBLTEUK_nodes_32
+            Tmat0 = _HBLTEUK_Tmat0_32
+            Tmat1 = _HBLTEUK_Tmat1_32
+            Tmat0Inv = _HBLTEUK_Tmat0Inv_32
         else:
-            D = D100[:n,:n]
+            D = _HBLTEUK_D100[:n,:n]
             nodes = ch.chebpts1(n)
             Tmat0 = xp.array(ch.chebvander(nodes, n-1))
             Tmat1 = xp.matmul(Tmat0, D)
@@ -370,12 +557,12 @@ class TeukolskySolver:
                 Fmat = self.fTS_plus_to_minus_2(sigmaNodes, la, self.frequency)
                 Gmat = dxdsigma[i]*self.gTS_plus_to_minus_2(sigmaNodes, la, self.frequency)
                 Mmat[i] = xp.multiply(Fmat, Tmat0) + xp.multiply(Gmat, Tmat1)
-        elif self.s == 1:
+        elif self.s == 1: # NOT YET IMPLEMENTED!!!!
             for i, sigmaNodes in enumerate(sigmaNodesTList):
                 Fmat = self.fTS_minus_to_plus_1(sigmaNodes, la, self.frequency)
                 Gmat = dxdsigma[i]*self.gTS_minus_to_plus_1(sigmaNodes, la, self.frequency)
                 Mmat[i] = xp.multiply(Fmat, Tmat0) + xp.multiply(Gmat, Tmat1)
-        elif self.s == -1:
+        elif self.s == -1: # NOT YET IMPLEMENTED!!!!
             for i, sigmaNodes in enumerate(sigmaNodesTList):
                 Fmat = self.fTS_plus_to_minus_1(sigmaNodes, la, self.frequency)
                 Gmat = dxdsigma[i]*self.gTS_plus_to_minus_1(sigmaNodes, la, self.frequency)
@@ -405,21 +592,21 @@ class TeukolskySolver:
         [smin, smax] = domain
     
         if n == 16:
-            nodes = nodes_16
-            Tmat0 = Tmat0_16
-            Tmat1 = Tmat1_16
-            Tmat2 = Tmat2_16
-            bc1 = bc1_16
-            bc2 = bc2_16
+            nodes = _HBLTEUK_nodes_16
+            Tmat0 = _HBLTEUK_Tmat0_16
+            Tmat1 = _HBLTEUK_Tmat1_16
+            Tmat2 = _HBLTEUK_Tmat2_16
+            bc1 = _HBLTEUK_bc1_16
+            bc2 = _HBLTEUK_bc2_16
         elif n == 32:
-            nodes = nodes_32
-            Tmat0 = Tmat0_32
-            Tmat1 = Tmat1_32
-            Tmat2 = Tmat2_32
-            bc1 = bc1_32
-            bc2 = bc2_32
+            nodes = _HBLTEUK_nodes_32
+            Tmat0 = _HBLTEUK_Tmat0_32
+            Tmat1 = _HBLTEUK_Tmat1_32
+            Tmat2 = _HBLTEUK_Tmat2_32
+            bc1 = _HBLTEUK_bc1_32
+            bc2 = _HBLTEUK_bc2_32
         else:
-            D = D100[:n,:n]
+            D = _HBLTEUK_D100[:n,:n]
             nodes = ch.chebpts1(n)
             Tmat0 = xp.array(ch.chebvander(nodes, n-1))
             Tmat1 = xp.matmul(Tmat0, D)
@@ -502,7 +689,7 @@ class TeukolskySolver:
         
         for boundary in self.domains[bc][2:]:
             psi0 = xp.sum(self.coeffs[s][bc][i])
-            dpsi0 = xp.sum(xp.matmul(D100[:nsample,:nsample],self.coeffs[s][bc][i]))/dsigmadx
+            dpsi0 = xp.sum(xp.matmul(_HBLTEUK_D100[:nsample,:nsample],self.coeffs[s][bc][i]))/dsigmadx
             smin = smax
             smax = boundary
             dsigmadx = 1./dxOfSigma(smin, smax)
@@ -510,13 +697,28 @@ class TeukolskySolver:
             i += 1
             
             self.coeffs[s][bc][i] = self.solve_hyperboloidal_coeffs_domain(s, psi0, dpsi0, [smin, smax], bc, n=nsample)
+            
+def default_smax():
+    return 0.5
+
+def default_smin(omega):
+    return 0.03*omega**(2/3)
+
+"""
+class RadialTeukolsky
+
+Methods
+-------
+"""
         
 class RadialTeukolsky(TeukolskySolver):
     
-    def solve(self, bc=['In','Up'], use_ts_transform=True, cutoff=[2,np.inf], subdomains=0):
+    def solve(self, bc=['In','Up'], use_ts_transform=True, cutoff=[2,np.inf], subdomains=0, chebyshev_samples=16):
+        # set domain for solver
+        self.domain = {'In': [default_smin(self.frequency), 1.], 'Up': [0., default_smax()]}
         if isinstance(bc, list) or isinstance(bc, np.ndarray):
             for condition in bc:
-                self.solve(condition, use_ts_transform=use_ts_transform, cutoff=cutoff, subdomains=subdomains)
+                self.solve(condition, use_ts_transform=use_ts_transform, cutoff=cutoff, subdomains=subdomains, chebyshev_samples=chebyshev_samples)
             return None
             
         start = time.time()
@@ -540,7 +742,8 @@ class RadialTeukolsky(TeukolskySolver):
             mincut = self.sigmaOfR(cutoff)
             maxcut = mincut
             
-        self._TeukolskySolver__solve_hyperboloidal_teukolsky_coeffs(s, bc, [mincut, maxcut], subdomains, nsample=16)
+        self.domain = {'In': [default_smin(self.frequency), 1.], 'Up': [0., default_smax()]}
+        self._TeukolskySolver__solve_hyperboloidal_teukolsky_coeffs(s, bc, [mincut, maxcut], subdomains, nsample=chebyshev_samples)
                 
         if use_ts_transform and s*self.s < 0:
             self.flip_spin(bc)
@@ -566,12 +769,6 @@ class RadialTeukolsky(TeukolskySolver):
         self.domain[bc][0] = rmin
 
         self.solution[bc] = RadialTeukolskySolution(self.s, self.l, self.frequency, bc, self.mch[bc])
-        
-    def test_accuracy(self, bc):
-        if self.mch[bc] is None:
-            print('ERROR: No solution available for {}'.format(bc))
-        else:
-            return 1   
     
     def get_hyperboloidal(self, bc=None):
         if bc is None:
@@ -599,11 +796,20 @@ class RadialTeukolsky(TeukolskySolver):
         sub_str = "{}, {}, {:.2f}".format(self.s, self.l, self.frequency)
         return r'$R^\mathrm{In/Up}_{sl\omega}(r; '+sub_str+')$'
     
+"""
+class HyperboloidalTeukolsky
+
+Methods
+-------
+"""
+    
 class HyperboloidalTeukolsky(TeukolskySolver):
-    def solve(self, bc=['In','Up'], use_ts_transform=True, cutoff=[0,1], subdomains=0):
+    def solve(self, bc=['In','Up'], use_ts_transform=True, cutoff=[0,1], subdomains=0, chebyshev_samples=16):
+        # set domain for solver
+        self.domain = {'In': [default_smin(self.frequency), 1.], 'Up': [0., default_smax()]}
         if isinstance(bc, list) or isinstance(bc, np.ndarray):
             for condition in bc:
-                self.solve(condition, use_ts_transform=use_ts_transform, cutoff=cutoff, subdomains=subdomains)
+                self.solve(condition, use_ts_transform=use_ts_transform, cutoff=cutoff, subdomains=subdomains, chebyshev_samples=chebyshev_samples)
             return None
             
         start = time.time()
@@ -616,7 +822,7 @@ class HyperboloidalTeukolsky(TeukolskySolver):
         else:
             s = self.s
             
-        self._TeukolskySolver__solve_hyperboloidal_teukolsky_coeffs(s, bc, cutoff, subdomains, nsample=16)
+        self._TeukolskySolver__solve_hyperboloidal_teukolsky_coeffs(s, bc, cutoff, subdomains, nsample=chebyshev_samples)
                 
         if use_ts_transform and s*self.s < 0:
             self.flip_spin(bc)
@@ -639,7 +845,11 @@ class HyperboloidalTeukolsky(TeukolskySolver):
         if self.mch[bc] is None:
             print('ERROR: No solution available for {}'.format(bc))
         else:
-            return 1   
+            sigma = np.linspace(self.domain[bc][0], self.domain[bc][1])
+            psi = self.mch[bc](sigma)
+            dpsi = self.mch[bc].deriv(1)(sigma)
+            dpsi2 = self.mch[bc].deriv(2)(sigma)
+            return [sigma, self.p_hbl(sigma)*dpsi2/psi + self.q_hbl(sigma, self.s, self.frequency)*dpsi/psi + self.u_hbl(sigma, self.s, self.eigenvalue, self.frequency)]
     
     def get_teukolsky(self, bc=None):
         if bc is None:
@@ -667,61 +877,6 @@ class HyperboloidalTeukolsky(TeukolskySolver):
         sub_str = "{}, {}, {:.2f}".format(self.s, self.l, self.frequency)
         return r'$\Psi^\mathrm{In/Up}_{sl\omega}(\sigma; '+sub_str+')$'
 
-def sigma_of_r(r, *args):
-    return 2/r
-
-def dr_dsigma(r, *args):
-    return -r**2/2
-
-def alpha_teuk(r, s, l, omega):
-    return r**(-2*s - 1)*np.exp(1j*omega*r)*(1 - 2./r)**(-s)*(2./r*(1 - 2./r))**(-2j*omega)
-
-def beta_teuk(r, *args):
-    return 0
-
-def alpha_teuk_deriv(r, s, l, omega):
-    return r**(-2*s - 1)*np.exp(1j*omega*r)*(1 - 2./r)**(-s)*(2./r*(1 - 2./r))**(-2j*omega)*((2 - r + 1j*omega*(-8 + r**2) + 2*s - 2*r*s)/((-2 + r)*r))
-    
-def beta_teuk_deriv(r, s, l, omega):
-    return r**(-2*s - 1)*np.exp(1j*omega*r)*(1 - 2./r)**(-s)*(2./r*(1 - 2./r))**(-2j*omega)
-
-def multi_chebyshev(sigma, funcs, domains, deriv=0):
-    if deriv == 0:
-        return multi_chebyshev(sigma, funcs, domains)
-    else:
-        return multi_chebyshev_deriv(sigma, funcs, domains)
-
-def multi_chebyshev_no_deriv(sigma, funcs, domains):
-    for i in range(funcs.size):
-        if sigma <= domains[i+1] and sigma >= domains[i]:
-            return funcs[i](sigma)
-    return 0
-
-def multi_chebyshev_deriv(sigma, funcs, domains, deriv=1):
-    for i in range(funcs.size):
-        if sigma <= domains[i+1] and sigma >= domains[i]:
-            return funcs[i].deriv(deriv)(sigma)
-    return 0
-
-def multi_chebyshev_vec(sigmaList, funcs, domains, deriv=0):
-    chebevalList = xp.empty(sigmaList.size, dtype=complex)
-    
-    if deriv == 0:
-        for i,sigma in enumerate(sigmaList):
-            chebevalList[i] = multi_chebyshev_no_deriv(sigma, funcs, domains)
-    else:
-        for i,sigma in enumerate(sigmaList):
-            chebevalList[i] = multi_chebyshev_deriv(sigma, funcs, domains, deriv)
-            
-    return chebevalList
-
-def multi_chebyshev_vec_no_deriv(sigmaList, funcs, domains):
-    chebevalList = xp.empty(sigmaList.size, dtype=complex)
-    for i,sigma in enumerate(sigmaList):
-        chebevalList[i] = multi_chebyshev_no_deriv(sigma, funcs, domains)
-    
-    return chebevalList
-
 def a1sigma0(s, lam, omega):
     return -(lam + 4j*omega*(s + 4j*omega))/(4j*omega)
 
@@ -730,89 +885,6 @@ def a2sigma0(s, lam, omega):
 
 def b1sigma1(s, lam, omega):
     return -(lam + (1 - 4j*omega)*(1 - 4j*omega + s) + 4j*omega*(4j*omega + s))/(-3 + 4j*omega - s + 2*(1 + s))
-
-def chebode(p, q, u, x0, psi0, dpsi0, n=16):
-    if n == 16:
-        nodes = nodes_16
-        Tmat0 = Tmat0_16
-        Tmat1 = Tmat1_16
-        Tmat2 = Tmat2_16
-        bc1 = bc1_16
-        bc2 = bc2_16
-    elif n == 32:
-        nodes = nodes_32
-        Tmat0 = Tmat0_32
-        Tmat1 = Tmat1_32
-        Tmat2 = Tmat2_32
-        bc1 = bc1_32
-        bc2 = bc2_32
-    else:
-        D = D100[:n,:n]
-        nodes = ch.chebpts1(n)
-        Tmat0 = xp.array(ch.chebvander(nodes, n-1))
-        Tmat1 = xp.matmul(Tmat0, D)
-        Tmat2 = xp.matmul(Tmat1, D)
-        bc1 = xp.array(ch.chebvander(-1, n - 1))
-        bc2 = xp.matmul(bc1, D)
-    
-    nodesT = nodes.reshape(n, 1)
-    Pmat = p(nodesT)
-    Qmat = q(nodesT)
-    Umat = u(nodesT)
-
-    Mmat = xp.multiply(Pmat, Tmat2) + xp.multiply(Qmat, Tmat1) + xp.multiply(Umat, Tmat0)
-    Mmat[0] = bc1
-    Mmat[1] = bc2
-
-    source = xp.zeros((n,1), dtype=np.cdouble)
-    source[0,0] = psi0
-    source[1,0] = dpsi0
-
-    coeffs = xp.linalg.solve(Mmat, source)
-    return coeffs
-
-def checkode(p, q, u, f):
-    nodes, psi = f.linspace()
-    nodes, dpsi = f.deriv().linspace()
-    nodes, d2psi = f.deriv(2).linspace()
-
-    return p(nodes)*d2psi + q(nodes)*dpsi + u(nodes)*psi
-
-def checkode2(p, q, u, f):
-    nodes, psi = f.linspace()
-    nodes, dpsi = f.deriv().linspace()
-    nodes, d2psi = f.deriv(2).linspace()
-
-    return p(nodes)*d2psi/psi + q(nodes)*dpsi/psi + u(nodes)
-
-def chebtransform(f, g, v):
-    n = v.shape[0]
-    D = D100[:n,:n]
-    
-    if n == 16:
-        nodes = nodes_16
-        Tmat0 = Tmat0_16
-        Tmat1 = Tmat1_16
-        Tmat0Inv = Tmat0Inv_16
-    elif n == 32:
-        nodes = nodes_32
-        Tmat0 = Tmat0_32
-        Tmat1 = Tmat1_32
-        Tmat0Inv = Tmat0Inv_32
-    else:
-        nodes = ch.chebpts1(n)
-        Tmat0 = xp.array(ch.chebvander(nodes, n-1))
-        Tmat1 = xp.matmul(Tmat0, D)
-        Tmat0Inv = xp.linalg.inv(Tmat0)
-    
-    Fmat = xp.diag(f(nodes))
-    Gmat = xp.diag(g(nodes))
-  
-    Mmat = xp.matmul(Fmat, Tmat0) + xp.matmul(Gmat, Tmat1)
-    vvec = xp.array(v.reshape([n,1]))
-
-    coeffs = xp.matmul(xp.matmul(Tmat0Inv, Mmat), vvec)
-    return coeffs
 
 def xOfSigma(sigma, smin, smax):
     return (2*sigma - (smax + smin))/(smax - smin)
@@ -823,163 +895,6 @@ def sigmaOfX(x, smin, smax):
 def dxOfSigma(smin, smax):
     return 2/(smax - smin)
 
-def flip_plus_2_teuk(l, omega, coeffs, domain):
-    s = -2
-    la = l*(l+1) - s*(s+1)
-    smin = domain[0]
-    smax = domain[1]
-    dxdsigma = dxOfSigma(smin, smax)
-    def ftrans(x):
-        return fTSp2SchwFull(sigmaOfX(x, smin, smax), la, omega)
-    def gtrans(x):
-        return dxdsigma*gTSp2SchwFull(sigmaOfX(x, smin, smax), la, omega)
-
-    newcoeffs = chebtransform(ftrans, gtrans, coeffs).flatten()
-    return newcoeffs
-
-def flip_minus_2_teuk(l, omega, coeffs, domain):
-    s = -2
-    la = l*(l+1) - s*(s+1)
-    smin = domain[0]
-    smax = domain[1]
-    dxdsigma = dxOfSigma(smin, smax)
-    def ftrans(x):
-        return fTSm2SchwFull(sigmaOfX(x, smin, smax), la, omega)
-    def gtrans(x):
-        return dxdsigma*gTSm2SchwFull(sigmaOfX(x, smin, smax), la, omega)
-
-    newcoeffs = chebtransform(ftrans, gtrans, coeffs).flatten()
-    return newcoeffs
-
-def chebteuk(s, l, omega):
-    la = l*(l+1) - s*(s+1)
-    a1 = a1sigma0(s, la, omega)
-    a2 = a2sigma0(s, la, omega)
-    smax = 0.5*xp.min(np.abs([1/a1, a1/a2]))
-    if smax > default_smax():
-        smax = default_smax()
-    smin = 0
-    dsigmadx = 1./dxOfSigma(smin, smax)
-    def pode(x):
-        return pSchwFull(sigmaOfX(x, smin, smax))
-    def qode(x):
-        return dsigmadx*qSchwFull(sigmaOfX(x, smin, smax), s, omega)
-    def uode(x):
-        return dsigmadx**2*uSchwFull(sigmaOfX(x, smin, smax), s, la, omega)
-    psi0 = 1
-    dpsi0 = -uode(-1)*psi0/qode(-1)
-
-    coeffs = chebode(pode, qode, uode, -1, psi0, dpsi0, 32).flatten()
-
-    return coeffs, [smin, smax]
-
-def multichebteuk(stemp, l, omega, bc='Up', cutoff=0, subdomains=0):
-    spinsign = 1
-    if bc=='Up':
-        spinsign = -1
-    if spinsign*stemp == 2:
-        s = -stemp
-    else:
-        s = stemp
-    la = l*(l+1) - s*(s+1)
-    
-    smin = 0
-    smax = 1
-    if subdomains == 0:
-        boundaryNum = np.amax([16, 4*l])
-    else:
-        boundaryNum = subdomains
-    
-    boundaryNode = -1
-    if bc == 'Up':
-        if cutoff <= 0 or cutoff >= 1:
-            smax = default_smax()
-        else:
-            smax = cutoff
-        a1 = a1sigma0(s, la, omega)
-        a2 = a2sigma0(s, la, omega)
-        smin = 0.5*xp.min(np.abs([1/a1, a1/a2]))
-        if smin > smax:
-            smin = smax
-            boundaryNum = 1
-    elif bc == 'In':
-        if cutoff <= 0 or cutoff >= 1:
-            smin = default_smin(omega)
-        else:
-            smin = cutoff
-        b1 = b1sigma1(s, la, omega)
-        smax = 1 - 1/np.abs(b1)
-        if smax < smin:
-            smax = smin
-            boundaryNum = 1
-    else:
-        print("Error")
-        
-    boundaryList = np.zeros(boundaryNum + 1)
-    boundaryList[1:] = smin*(smax/smin)**np.linspace(0, 1, num=boundaryNum)
-    if bc == 'In':
-        boundaryList[0] = 1
-        boundaryList[1:] = boundaryList[1:][::-1]
-    #print(boundaryList)
-
-    smin = boundaryList[0]
-    smax = boundaryList[1]
-    dsigmadx = 1./dxOfSigma(smin, smax)
-    #print(dsigmadx)
-    #print(sigmaOfX(-1, smin, smax))
-    
-    def pode(x):
-        return pSchwFull(sigmaOfX(x, smin, smax))
-    def qode(x):
-        return dsigmadx*qSchwFull(sigmaOfX(x, smin, smax), s, omega)
-    def uode(x):
-        return dsigmadx**2*uSchwFull(sigmaOfX(x, smin, smax), s, la, omega)
-    
-    psi0 = 1.
-    dpsi0 = -uode(boundaryNode)*psi0/qode(boundaryNode)
-    coeffs = chebode(pode, qode, uode, boundaryNode, psi0, dpsi0, 32).flatten()
-    coeffsList = np.empty(boundaryNum, dtype=object)
-    #print(coeffs)
-    
-    i=0
-    if spinsign*stemp == 2:
-        if stemp == -2:
-            coeffsList[i] = flip_plus_2_teuk(l, omega, coeffs, [smin, smax])
-        else:
-            coeffsList[i] = flip_minus_2_teuk(l, omega, coeffs, [smin, smax])
-    else:
-        coeffsList[i] = coeffs
-  
-    for boundary in boundaryList[2:]:
-        i += 1
-        if use_gpu:
-            coeffs = coeffs.get()
-        f = ch.Chebyshev(coeffs, domain=[smin, smax])
-        psi0 = f(smax)
-        dpsi0 = f.deriv()(smax)
-        smin = smax
-        smax = boundary
-        dsigmadx = 1./dxOfSigma(smin, smax)
-        #print(smin, smax, dsigmadx)
-        dpsi0 *= dsigmadx
-        def pode(x):
-            return pSchwFull(sigmaOfX(x, smin, smax))
-        def qode(x):
-            return dsigmadx*qSchwFull(sigmaOfX(x, smin, smax), s, omega)
-        def uode(x):
-            return dsigmadx**2*uSchwFull(sigmaOfX(x, smin, smax), s, la, omega)
-
-        coeffs = chebode(pode, qode, uode, boundaryNode, psi0, dpsi0, 16).flatten()
-        if spinsign*stemp == 2:
-            if stemp == -2:
-                coeffsList[i] = flip_plus_2_teuk(l, omega, coeffs, [smin, smax])
-            else:
-                coeffsList[i] = flip_minus_2_teuk(l, omega, coeffs, [smin, smax])
-        else:
-            coeffsList[i] = coeffs
-
-    return coeffsList, boundaryList
-
 def hfunc(sigma):
     return 2/sigma - 2*np.log(sigma) - 2*np.log(1 - sigma)
 
@@ -988,14 +903,3 @@ def rescaleteuksigma(s, omega, sigma):
 
 def rescaleteuk(s, omega, r):
     return rescaleteuksigma(s, omega, 2/r)
-
-def checkteuk(s, l, omega, f):
-    la = l*(l+1) - s*(s+1)
-    def pode(x):
-        return pSchwFull(x)
-    def qode(x):
-        return qSchwFull(x, s, omega)
-    def uode(x):
-        return uSchwFull(x, s, la, omega)
-
-    return checkode2(pode, qode, uode, f)
