@@ -111,7 +111,7 @@ class MultiChebyshev:
         self.n_cs, self.n_sample = self.coeffs.shape
         self.chebylist = np.empty(self.n_cs, dtype=object)
         for i in range(self.n_cs):
-            self.chebylist[i] = ch.Chebyshev(self.coeffs[i], domain=[self.domains[i], self.domains[i+1]])
+            self.chebylist[i] = ch.Chebyshev(self.coeffs[i], domain=[self.domains[i], self.domains[i+1]]).trim(tol=np.abs(self.coeffs[i][0]*10.**(-14)))
         if self.domains[0] > self.domains[1]:
             self.sorted_chebylist = self.chebylist[::-1] # reverse
             self.sorted_domains = self.domains[::-1]
@@ -156,12 +156,14 @@ def multi_chebyshev_no_deriv(sigma, funcs, domains):
     # search to see if sigma is within a certain subdomain
     # If it is in the ith subdomain, then evaluate the chebyshev series
     # that represents the solution in that subdomain
+#     print(sigma)
     for i in range(funcs.size):
-        if sigma <= domains[i+1] and sigma >= domains[i]:
+        if xp.real(sigma) <= domains[i+1] and xp.real(sigma) >= domains[i]:
+#             print(i)
             return funcs[i](sigma)
-    if sigma > domains[-1]:
+    if xp.real(sigma) > domains[-1]:
         return funcs[-1](sigma)
-    if sigma < domains[0]:
+    if xp.real(sigma) < domains[0]:
         return funcs[0](sigma)
     return 0
 
@@ -368,10 +370,10 @@ class RadialTeukolskySolution:
         return self.a/(2.*self.kappa)*xp.log(1. - sigma)
     
     def height_function(self, sigma):
-        return 2.*self.kappa/sigma - 2.*xp.log(sigma) - (1. + self.kappa)/self.kappa*xp.log(1. - sigma) + 2.*xp.log(1. + self.kappa) - 2.*xp.log(2.*self.kappa) - (1. - self.kappa)
+        return 2.*self.kappa/sigma - 2.*xp.log(sigma) - (1. + self.kappa)/self.kappa*xp.log(1. - sigma) + (1. - self.kappa) + 2.*xp.log(self.kappa)
     
     def Zsigma(self, sigma):
-        return sigma/(1. + self.kappa)*(4*self.kappa**2*(1. - sigma)/sigma**2)**(-self.s)*xp.exp(1.j*(self.m*self.Phi_hbl(sigma) + self.frequency*self.height_function(sigma)))
+        return sigma/(2.*self.kappa)*(4*self.kappa**2*(1. - sigma)/sigma**2)**(-self.s)*xp.exp(1.j*(self.m*self.Phi_hbl(sigma) + self.frequency*self.height_function(sigma)))
     
     def dPhi_dsigma(self, sigma):
         return - 0.5*self.a/(1. - self.kappa)/sigma
@@ -724,7 +726,7 @@ class TeukolskySolver:
 #         print(-self.__u_s(0, s)/self.__q_s(0, s))
     
         if bc == 'In':
-            psi0 = 2*np.exp(-4j*self.frequency)
+            psi0 = 2.*self.kappa*xp.exp(1.j*(0.5*self.m*self.a/self.horizon - 2.*self.frequency)*(1. + self.kappa + 2.*xp.log(self.kappa)))
             dpsi0 = dsigmadx*b1sigma1(s, self.kappa, la, self.m*self.a, self.frequency)*psi0
         else:
             psi0 = 1.
