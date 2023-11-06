@@ -111,7 +111,8 @@ class MultiChebyshev:
         self.n_cs, self.n_sample = self.coeffs.shape
         self.chebylist = np.empty(self.n_cs, dtype=object)
         for i in range(self.n_cs):
-            self.chebylist[i] = ch.Chebyshev(self.coeffs[i], domain=[self.domains[i], self.domains[i+1]]).trim(tol=np.abs(self.coeffs[i][0]*10.**(-14)))
+            # self.chebylist[i] = ch.Chebyshev(self.coeffs[i], domain=[self.domains[i], self.domains[i+1]]).trim(tol=np.abs(self.coeffs[i][0]*10.**(-18)))
+            self.chebylist[i] = ch.Chebyshev(self.coeffs[i], domain=[self.domains[i], self.domains[i+1]])
         if self.domains[0] > self.domains[1]:
             self.sorted_chebylist = self.chebylist[::-1] # reverse
             self.sorted_domains = self.domains[::-1]
@@ -156,10 +157,11 @@ def multi_chebyshev_no_deriv(sigma, funcs, domains):
     # search to see if sigma is within a certain subdomain
     # If it is in the ith subdomain, then evaluate the chebyshev series
     # that represents the solution in that subdomain
-#     print(sigma)
+    # for i in range(funcs.size):
+    #     print(i)
+    #     print(1-funcs[i](sigma)/((-1973807.9485408224+742383.7862688375j)))
     for i in range(funcs.size):
         if xp.real(sigma) <= domains[i+1] and xp.real(sigma) >= domains[i]:
-#             print(i)
             return funcs[i](sigma)
     if xp.real(sigma) > domains[-1]:
         return funcs[-1](sigma)
@@ -272,7 +274,7 @@ class HyperboloidalTeukolskySolution:
         elif deriv == 1:
             return self.deriv(sigma)
         else:
-            self.mch(sigma, deriv)
+            return self.mch(sigma, deriv)
             
 """
 class RadialTeukolskySolution
@@ -359,6 +361,12 @@ class RadialTeukolskySolution:
     
     def dsigma_dr(self, r):
         return -2.*self.kappa/(r - (1. - self.kappa))**2
+
+    def dsigma_dr_of_sigma(self, sigma):
+        return -sigma**2/(2.*self.kappa)
+
+    def dsigma_dr_of_sigma_deriv(self, sigma):
+        return -sigma/self.kappa
     
     def r_of_sigma(self, sigma):
         return 1. - self.kappa + 2.*self.kappa/sigma
@@ -374,12 +382,24 @@ class RadialTeukolskySolution:
     
     def Zsigma(self, sigma):
         return sigma/(2.*self.kappa)*(4*self.kappa**2*(1. - sigma)/sigma**2)**(-self.s)*xp.exp(1.j*(self.m*self.Phi_hbl(sigma) + self.frequency*self.height_function(sigma)))
+
+    def Zsigma_deriv(self, sigma):
+        return self.Zsigma(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
+
+    def Zsigma_deriv2(self, sigma):
+        return self.Zsigma(sigma)*(self.s/(1. - sigma)**2 - (1. + 2.*self.s)/sigma**2 + 1j*self.frequency*self.d2h_dsigma2(sigma) + 1j*self.m*self.d2Phi_dsigma2(sigma)) + self.Zsigma_deriv(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
     
     def dPhi_dsigma(self, sigma):
-        return - 0.5*self.a/(1. - self.kappa)/sigma
+        return -0.5*self.a/(1. - sigma)/self.kappa
     
     def dh_dsigma(self, sigma):
         return -2.*self.kappa/sigma**2 - 2./sigma + (1. + self.kappa)/self.kappa/(1. - sigma)
+
+    def d2Phi_dsigma2(self, sigma):
+        return -0.5*self.a/(1. - sigma)**2/self.kappa
+    
+    def d2h_dsigma2(self, sigma):
+        return -4.*self.kappa/sigma**3 + 2./sigma**2 + (1. + self.kappa)/self.kappa/(1. - sigma)**2
     
     def dDelta_over_delta(self, sigma):
         return -1./(1. - sigma) - 2./sigma
@@ -561,7 +581,51 @@ class TeukolskySolver:
     
     def default_smax(self):
         return self.sigmaOfR(2.*self.horizon - self.a)
-        
+
+    def sigma_of_r(self, r):
+        return 2.*self.kappa/(r - (1. - self.kappa))
+    
+    def dsigma_dr(self, r):
+        return -2.*self.kappa/(r - (1. - self.kappa))**2
+
+    def dsigma_dr_of_sigma(self, sigma):
+        return -sigma**2/(2.*self.kappa)
+
+    def dsigma_dr_of_sigma_deriv(self, sigma):
+        return -sigma/self.kappa
+    
+    def r_of_sigma(self, sigma):
+        return 1. - self.kappa + 2.*self.kappa/sigma
+    
+    def dr_dsigma(self, r):
+        return -0.5*(r - (1. - self.kappa))**2/self.kappa
+    
+    def Phi_hbl(self, sigma):
+        return self.a/(2.*self.kappa)*xp.log(1. - sigma)
+    
+    def height_function(self, sigma):
+        return 2.*self.kappa/sigma - 2.*xp.log(sigma) - (1. + self.kappa)/self.kappa*xp.log(1. - sigma) + (1. - self.kappa) + 2.*xp.log(self.kappa)
+    
+    def Zsigma(self, sigma):
+        return sigma/(2.*self.kappa)*(4*self.kappa**2*(1. - sigma)/sigma**2)**(-self.s)*xp.exp(1.j*(self.m*self.Phi_hbl(sigma) + self.frequency*self.height_function(sigma)))
+
+    def Zsigma_deriv(self, sigma):
+        return self.Zsigma(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
+
+    def Zsigma_deriv2(self, sigma):
+        return self.Zsigma(sigma)*(self.s/(1. - sigma)**2 - (1. + 2.*self.s)/sigma**2 + 1j*self.frequency*self.d2h_dsigma2(sigma) + 1j*self.m*self.d2Phi_dsigma2(sigma)) + self.Zsigma_deriv(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
+    
+    def dPhi_dsigma(self, sigma):
+        return -0.5*self.a/(1. - sigma)/self.kappa
+    
+    def dh_dsigma(self, sigma):
+        return -2.*self.kappa/sigma**2 - 2./sigma + (1. + self.kappa)/self.kappa/(1. - sigma)
+
+    def d2Phi_dsigma2(self, sigma):
+        return -0.5*self.a/(1. - sigma)**2/self.kappa
+    
+    def d2h_dsigma2(self, sigma):
+        return -4.*self.kappa/sigma**3 + 2./sigma**2 + (1. + self.kappa)/self.kappa/(1. - sigma)**2       
     
     def __flip_spin_coeffs(self, clist, dlist):
         s = -abs(self.s)
@@ -688,42 +752,47 @@ class TeukolskySolver:
         else:
             boundaryNum = subdomains
     
-        mincut, maxcut = cutoff
-            
+        cutIn, cutUp = cutoff
+        
+        # print(f"Calculating bc = {bc}")
+
         if bc == 'Up':
-            if maxcut > 0. and maxcut < 1.:
-                smax = maxcut
+            if cutUp > 0. and cutUp < 1.:
+                smax = cutUp
             a1 = a1sigma0(s, self.kappa, la, self.m*self.a, self.frequency)
             a2 = a2sigma0(s, self.kappa, la, self.m*self.a, self.frequency)
-            smin = 0.5*xp.min(np.abs([1/a1, a1/a2]))
-            if smin > smax:
-                smin = smax
-                boundaryNum = 1
+            if boundaryNum > 1:
+                smin = 0.5*xp.min(np.abs([1/a1, a1/a2]))
+                if smin > smax:
+                    smin = smax
+                    boundaryNum = 1
         elif bc == 'In':
-            if mincut > 0 and mincut < 1:
-                smin = mincut
+            if cutIn > 0 and cutIn < 1:
+                smin = cutIn
             b1 = b1sigma1(s, self.kappa, la, self.m*self.a, self.frequency)
-            smax = 1 - 1/np.abs(b1)
-            if smax < smin:
-                smax = smin
-                boundaryNum = 1
+            if boundaryNum > 1:
+                smax = 1 - 1/np.abs(b1)
+                if smax < smin:
+                    smax = smin
+                    boundaryNum = 1
         else:
             print("Error")
         
-        self.domains[bc] = np.zeros(boundaryNum + 1)
-        self.domains[bc][1:] = smin*(smax/smin)**np.linspace(0, 1, num=boundaryNum)
-        if bc == 'In':
-            self.domains[bc][0] = 1
-            self.domains[bc][1:] = self.domains[bc][1:][::-1] # reverse list
+        if boundaryNum > 1:
+            self.domains[bc] = np.zeros(boundaryNum + 1)
+            self.domains[bc][1:] = smin*(smax/smin)**np.linspace(0, 1, num=boundaryNum)
+            if bc == 'In':
+                self.domains[bc][0] = 1
+                self.domains[bc][1:] = self.domains[bc][1:][::-1] # reverse list
+        else:
+            self.domains[bc] = [smin, smax]
+            if bc == 'In':
+                self.domains[bc] = [smax, smin]
 
         smin = self.domains[bc][0]
         smax = self.domains[bc][1]
+
         dsigmadx = 1./dxOfSigma(smin, smax)
-        
-#         print(b1sigma1(s, self.kappa, la, self.m*self.a, self.frequency))
-#         print(-self.__u_s(1, s)/self.__q_s(1, s))
-#         print(a1sigma0(s, self.kappa, la, self.m*self.a, self.frequency))
-#         print(-self.__u_s(0, s)/self.__q_s(0, s))
     
         if bc == 'In':
             psi0 = 2.*self.kappa*xp.exp(1.j*(0.5*self.m*self.a/self.horizon - 2.*self.frequency)*(1. + self.kappa + 2.*xp.log(self.kappa)))
@@ -966,11 +1035,11 @@ def sigmaOfX(x, smin, smax):
 def dxOfSigma(smin, smax):
     return 2/(smax - smin)
 
-def hfunc(sigma):
-    return 2/sigma - 2*np.log(sigma) - 2*np.log(1 - sigma)
+# def hfunc(sigma):
+#     return 2/sigma - 2*np.log(sigma) - 2*np.log(1 - sigma)
 
-def rescaleteuksigma(s, omega, sigma):
-    return 0.5*sigma**(1+2*s)*(4*(1 - sigma))**(-s)*np.exp(1j*omega*hfunc(sigma))
+# def rescaleteuksigma(s, omega, sigma):
+#     return 0.5*sigma**(1+2*s)*(4*(1 - sigma))**(-s)*np.exp(1j*omega*hfunc(sigma))
 
-def rescaleteuk(s, omega, r):
-    return rescaleteuksigma(s, omega, 2/r)
+# def rescaleteuk(s, omega, r):
+#     return rescaleteuksigma(s, omega, 2/r)

@@ -15,14 +15,22 @@ def fac(n):
     return float(np.math.factorial(n))
 
 def Yslm(s, l, m, th):
+    if np.abs(s) > l:
+        return 0.*th
     if s == 0:
         return np.real(sph_harm(m, l, 0., th))
     elif s + m < 0:
-        return (-1)**(s+m)*YslmBase(-s, l, -m, np.cos(th))
-#     elif th > np.pi/2.:
-#         return (-1.)**(l + m)*YslmBase(-s, l, m, -np.cos(th))
+        return (-1.)**(s+m)*YslmBase(-s, l, -m, np.cos(th))
     else:
         return YslmBase(s, l, m, np.cos(th))
+
+def YslmDerivative(s, l, m, th):
+    if np.abs(s) > l:
+        return 0.*th
+    elif s + m < 0:
+        return -np.sin(th)*(-1.)**(s+m)*YslmBaseDerivative(-s, l, -m, np.cos(th))
+    else:
+        return -np.sin(th)*YslmBaseDerivative(s, l, m, np.cos(th))
 
 def YslmBase(s, l, m, z):
     rmax = l - s
@@ -33,6 +41,19 @@ def YslmBase(s, l, m, z):
         yslm += binom(l - s, r)*binom(l + s, r + s - m)*(z - 1.)**(rmax - r)*(z + 1.)**(r)
     
     return pref*yslm
+
+def YslmBaseDerivative(s, l, m, z):
+    rmax = l - s
+    pref_derivative = -(0.5)**(l)*(-1.)**m*np.sqrt(factorial(l+m)/factorial(l+s)*factorial(l-m)/factorial(l-s)*(2*l+1)/(4.*np.pi))*np.sqrt(1. - z)**(s + m - 2)*np.sqrt(1. + z)**(s - m - 2)*(m + s*z)
+    pref = (0.5)**(l)*(-1.)**m*np.sqrt(factorial(l+m)/factorial(l+s)*factorial(l-m)/factorial(l-s)*(2*l+1)/(4.*np.pi))*np.sqrt(1. - z)**(s + m)*np.sqrt(1. + z)**(s - m)
+
+    yslm_derivative = 0.*pref
+    yslm = 0.*pref_derivative
+    for r in range(0, rmax + 1):
+        yslm_derivative += binom(l - s, r)*binom(l + s, r + s - m)*(z - 1.)**(rmax - r - 1)*(z + 1.)**(r - 1)*(rmax*(z + 1.) - 2.*r)
+        yslm += binom(l - s, r)*binom(l + s, r + s - m)*(z - 1.)**(rmax - r)*(z + 1.)**(r)
+    
+    return pref_derivative*yslm + pref*yslm_derivative
 
 def clebsch(l1, l2, l3, m1, m2, m3):
     return (-1)**(l1 - l2 + m3)*np.sqrt(2*l3 + 1)*w3j(l1, l2, l3, m1, m2, -m3);
@@ -288,22 +309,29 @@ class SWSHSeriesBase(SWSHBase):
     def generate_eigs(self):
         las, eigs = self.eigs()
         pos = np.argsort(np.real(las))[self.l - self.lmin]
-        return (np.real(las[pos]), np.real(eigs[:, pos]))
+        eigs_temp = np.real(eigs[:, pos])
+        eigs_return = np.sign(eigs_temp[self.l - self.lmin])*eigs_temp
+        return (np.real(las[pos]), eigs_return)
 
-class SWSH(SWSHSeriesBase):
+class SpinWeightedSpheroidalHarmonic(SWSHSeriesBase):
     def __init__(self, s, l, m, g):
         SWSHSeriesBase.__init__(self, s, l, m, g)
         if self.spheroidicity == 0.:
             self.eval = self.Yslm
+            self.deriv = self.Yslm_derivative
             self.eigenvalue = Yslm_eigenvalue(self.s, self.l)
             self.coeffs = np.zeros(self.l - self.lmin)
             self.coeffs[-1] = 1.
         else:
             self.eval = self.Sslm
+            self.deriv = self.Sslm_derivative
             self.eigenvalue, self.coeffs = self.generate_eigs()
             
     def Yslm(self, l, th):
         return Yslm(self.s, l, self.m, th)
+
+    def Yslm_derivative(self, l, th):
+        return YslmDerivative(self.s, l, self.m, th)
     
     def Sslm(self, *args):
         th = args[-1]
@@ -314,7 +342,48 @@ class SWSH(SWSHSeriesBase):
             Yslm_array[i] = self.Yslm(self.lmin + i, th)
             
         return np.dot(self.coeffs, Yslm_array)
+
+    def Sslm_derivative(self, *args):
+        th = args[-1]
+        term_num = self.coeffs.shape[0]
+        pts_num = th.shape[0]
+        Yslm_array = np.empty((term_num, pts_num))
+        for i in range(term_num):
+            Yslm_array[i] = self.Yslm_derivative(self.lmin + i, th)
             
+        return np.dot(self.coeffs, Yslm_array)
+            
+    def deriv2(self, th):
+        S = self.eval(th)
+        dS = self.deriv(th)
+        f = np.cos(th)/np.sin(th)
+        g = -self.spheroidicity**2*np.sin(th)**2 - (self.m + self.s*np.cos(th))**2/np.sin(th)**2 - 2*self.s*self.spheroidicity*np.cos(th) + self.s + 2.*self.m*self.spheroidicity + self.eigenvalue
+
+        return -f*dS - g*S
+    
     def __call__(self, th):
         return self.eval(self.l, th)
+
+def muCoupling(s, l):
+    """
+    Eigenvalue for the spin-weighted spherical harmonic lowering operator
+    Setting s -> -s gives the negative of the eigenvalue for the raising operator
+    """
+    if l + s < 0 or l - s + 1. < 0:
+        return 0
+    return np.sqrt((l - s + 1.)*(l + s))
+
+def Asjlm(s, j, l, m):
+    if s >= 0:
+        return (-1.)**(m + s)*np.sqrt(4**s*fac(s)**2*(2*l + 1)*(2*j + 1)/fac(2*s))*w3j(s, l, j, 0, m, -m)*w3j(s, l, j, s, -s, 0)
+    else:
+        return (-1.)**(m)*np.sqrt(4**(-s)*fac(-s)**2*(2*l + 1)*(2*j + 1)/fac(-2*s))*w3j(-s, l, j, 0, m, -m)*w3j(-s, l, j, s, -s, 0)
+
+def spin_operator_normalization(s, ns, l):
+    s_sgn = np.sign(s)
+    nmax1 = np.abs(s) + 1
+    Jterm = 1.
+    for ni in range(1, ns + 1):
+        Jterm *= -s_sgn*muCoupling((nmax1-ni), l)
+    return Jterm
         
