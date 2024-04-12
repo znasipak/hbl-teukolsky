@@ -16,7 +16,8 @@ import numpy as xp # This is leaving open the introduction of GPUs in the future
 import numpy.polynomial.chebyshev as ch
 #import scipy
 import time
-from swsh import swsh_eigenvalue
+# from swsh import swsh_eigenvalue
+from spheroidal import eigenvalue
 
 """
 GLOBAL VARIABLES
@@ -25,7 +26,7 @@ and the collocation points at the Chebyshev nodes
 """
 
 # construct the differential matrix '_HBLTEUK_D100' that gives the derivative of a Chebyshev series
-_HBLTEUK_dsize = 500
+_HBLTEUK_dsize = 1000
 _HBLTEUK_D100 = xp.zeros([_HBLTEUK_dsize,_HBLTEUK_dsize], np.float32)
 _HBLTEUK_j = 1
 while _HBLTEUK_j < _HBLTEUK_dsize:
@@ -264,9 +265,9 @@ class HyperboloidalTeukolskySolution:
     
     def _repr_latex_(self):
         bc_str = str(self.bc)
-        sub_str = "{}, {}, {}, {:.2f}".format(self.s, self.l, self.m, self.frequency)
+        sub_str = "{}, {}, {}, {}, {:.2f}".format(self.a, self.s, self.l, self.m, self.frequency)
         domain_str = "[{:.2f}, {:.2f}]".format(self.domain[0], self.domain[1])
-        return r'{$\psi^\mathrm{'+bc_str+'}_{slm\omega}(\sigma; '+sub_str+')$, $\sigma \in '+domain_str+' $}'
+        return r'{$\psi^\mathrm{'+bc_str+'}_{aslm\omega}(\sigma; '+sub_str+')$, $\sigma \in '+domain_str+' $}'
     
     def __call__(self, sigma, deriv=0):
         if deriv == 0:
@@ -381,7 +382,7 @@ class RadialTeukolskySolution:
         return 2.*self.kappa/sigma - 2.*xp.log(sigma) - (1. + self.kappa)/self.kappa*xp.log(1. - sigma) + (1. - self.kappa) + 2.*xp.log(self.kappa)
     
     def Zsigma(self, sigma):
-        return sigma/(2.*self.kappa)*(4*self.kappa**2*(1. - sigma)/sigma**2)**(-self.s)*xp.exp(1.j*(self.m*self.Phi_hbl(sigma) + self.frequency*self.height_function(sigma)))
+        return sigma/(1 + self.kappa)*(4*self.kappa**2*(1. - sigma)/sigma**2)**(-self.s)*xp.exp(1.j*(self.m*self.Phi_hbl(sigma) + self.frequency*self.height_function(sigma)))
 
     def Zsigma_deriv(self, sigma):
         return self.Zsigma(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
@@ -479,7 +480,7 @@ class TeukolskySolver:
         self.m = m
         self.frequency = omega
         if lam is None:
-            self.eigenvalue = swsh_eigenvalue(self.s, self.l, self.m, self.a*self.frequency)
+            self.eigenvalue = eigenvalue(self.s, self.l, self.m, self.a*self.frequency)
         else:
             self.eigenvalue = lam
         
@@ -537,37 +538,58 @@ class TeukolskySolver:
     @staticmethod
     def dxOfSigma(smin, smax):
         return 2/(smax - smin)
+
+    @staticmethod
+    def dsigmaOfX(smin, smax):
+        return (smax - smin)/2
+    
+    # @staticmethod
+    # def fTS_plus_to_minus_2(sigma, lam, omega):
+    #     return (2*omega)**(-4)*1/16.*((256j)*omega**3*sigma - lam*(2 + lam)*(-1 + sigma)*sigma**4 + 256*omega**4*(1 + sigma) + (4j)*omega*sigma**3*(lam*(-6 + 5*sigma) + sigma*(-5 + 6*sigma)) + 16*omega**2*sigma**2*(lam*(-3 + 2*sigma**2) + sigma*(-5 + sigma + 3*sigma**2)))/(1 - sigma)**3
+    
+    # @staticmethod
+    # def gTS_plus_to_minus_2(sigma, lam, omega):
+    #     return (2*omega)**(-4)*((-0.25j)*omega*sigma**2*(16*omega**2 + sigma**2*(2*lam*(-1 + sigma) + sigma*(-2 + 3*sigma))))/(-1 + sigma)**3
+    
+    # @staticmethod
+    # def fTS_minus_to_plus_2(sigma, lam, omega):
+    #     return (16*(128j*omega**3 + 256*omega**4 + lam*(2 + lam)*(-1 + sigma)**2*sigma**2 + 4j*omega*sigma*(sigma*(-3 + 5*sigma) + lam*(-2 + sigma + sigma**2)) + 16*omega**2*(lam*(-1 + sigma)*(1 + 2*sigma**2) + sigma*(-3 + sigma*(3 + sigma*(-2 + 3*sigma))))))/sigma**6/(128j*omega*(-1 + 2j*omega)*(-1 + 4j*omega)*(1 + 4j*omega))
+    
+    # @staticmethod
+    # def gTS_minus_to_plus_2(sigma, lam, omega):
+    #     return (64j*omega*(-1 + sigma)*(16*omega**2 + 2*lam*(-1 + sigma)*sigma**2 + sigma**3*(-2 + 3*sigma)))/sigma**6/(128j*omega*(-1 + 2j*omega)*(-1 + 4j*omega)*(1 + 4j*omega))
+
+    @staticmethod
+    def fTS_plus_to_minus_2(sigma, kappa, lam, ma, omega):
+        return kappa**(-7)*omega**(-4)*(-1+sigma)**(-3)*(1/256)*(256*kappa**(7)*omega**(4)*(-1+sigma)**(3)+32*sigma*kappa**(6)*omega**(3)*(-1+sigma)**(2)*(-8+5*sigma)*(4*omega+(1j))+sigma**(7)*(ma-2*omega)**(3)*(4*omega+(1j))+kappa**(2)*sigma**(5)*(ma-2*omega)*(4*omega+(1j))*(8+lam*(-4+3*sigma)+96*omega**(2)+sigma**(2)*(1+12*omega**(2))-6*sigma*(1+14*omega**(2)+omega*(-3*ma+(1j)))+4*omega*(-6*ma+(3j)))+4*omega*kappa**(4)*sigma**(3)*(4*omega+(1j))*(2*lam*(3-5*sigma+2*sigma**(2))+omega*sigma**(3)*(14*omega+(1j))+10*sigma*(2-6*ma*omega+24*omega**(2)+omega*(3j))-4*sigma**(2)*(2-6*ma*omega+30*omega**(2)+omega*(3j))-4*(3-9*ma*omega+34*omega**(2)+omega*(5j)))+kappa*sigma**(6)*(ma-2*omega)**(2)*(-2+lam+4*ma*omega+8*omega**(2)*(-7+3*sigma)+omega*(6j)*(-3+sigma))+12*kappa**(5)*omega**(2)*sigma**(2)*(-1+sigma)*(4*lam*(-1+sigma)+8*(1-2*ma*omega+20*omega**(2)+omega*(7j))-8*sigma*(1-2*ma*omega+24*omega**(2)+omega*(8j))+sigma**(2)*(-1+48*omega**(2)+omega*(16j)))+kappa**(3)*sigma**(4)*(lam**(2)*(-1+sigma)+2*lam*(1+40*omega**(2)+sigma*(-1-48*omega**(2)+4*omega*(2*ma+(-3j)))+omega*sigma**(2)*(10*omega+(3j))+omega*(-8*ma+(10j)))+2*omega*(24*omega*ma**(2)*(-1+sigma)+sigma**(3)*(4*omega+16*omega**(3)+(1j)+omega**(2)*(4j))-6*sigma**(2)*(2*omega+56*omega**(3)+(1j)+omega**(2)*(18j))+6*sigma*(7*omega+176*omega**(3)+(2j)+omega**(2)*(64j))+ma*(sigma**(2)*(-1+120*omega**(2)+omega*(36j))+2*(5+192*omega**(2)+omega*(60j))-2*sigma*(5+240*omega**(2)+omega*(72j)))-2*(17*omega+400*omega**(3)+(5j)+omega**(2)*(160j)))))
     
     @staticmethod
-    def fTS_plus_to_minus_2(sigma, lam, omega):
-        return (2*omega)**(-4)*1/16.*((256j)*omega**3*sigma - lam*(2 + lam)*(-1 + sigma)*sigma**4 + 256*omega**4*(1 + sigma) + (4j)*omega*sigma**3*(lam*(-6 + 5*sigma) + sigma*(-5 + 6*sigma)) + 16*omega**2*sigma**2*(lam*(-3 + 2*sigma**2) + sigma*(-5 + sigma + 3*sigma**2)))/(1 - sigma)**3
+    def gTS_plus_to_minus_2(sigma, kappa, lam, ma, omega):
+        return kappa**(-7)*omega**(-4)*(-1+sigma)**(-3)*(1j)/(256)*(ma*sigma**(4)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+6*omega*ma**(2)*sigma**(6)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-1*sigma**(2))+2*omega*sigma**(2)*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-1*kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6))+ma**(3)*sigma**(8))
     
     @staticmethod
-    def gTS_plus_to_minus_2(sigma, lam, omega):
-        return (2*omega)**(-4)*((-0.25j)*omega*sigma**2*(16*omega**2 + sigma**2*(2*lam*(-1 + sigma) + sigma*(-2 + 3*sigma))))/(-1 + sigma)**3
+    def fTS_minus_to_plus_2(sigma, kappa, lam, ma, omega):
+        return kappa**(-3)*sigma**(-6)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(1j))**(-1)*(2+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(-1*ma+2*(1+kappa)*omega)**(-1)*(-1j)*(sigma**(6)*(ma-2*omega)**(4)-32*kappa**(7)*omega**(3)*(-1+sigma)**(3)*(4*omega+(1j))+kappa*sigma**(5)*(ma-2*omega)**(3)*(-3+sigma)*(4*omega+(1j))-4*kappa**(6)*omega**(2)*(-1+sigma)**(2)*(-4*lam*(-1+sigma)-8*sigma*(-1+2*ma*omega+8*omega**(2))+sigma**(2)*(3+48*omega**(2))-8*(1-2*ma*omega+4*omega**(2)+omega*(3j)))-4*omega*sigma*kappa**(5)*(-1+sigma)*(4*omega+(1j))*(2*lam*(-1+sigma)+2*sigma*(-2+6*ma*omega+omega*(-9j))+3*omega*sigma**(3)*(2*omega+(-1j))+12*omega*sigma**(2)*(-2*omega+(1j))+4*(1-3*ma*omega+6*omega**(2)+omega*(3j)))+kappa**(3)*sigma**(3)*(ma-2*omega)*(4*omega+(1j))*(lam*(4-5*sigma+sigma**(2))-1*sigma**(3)*(-2*omega+(1j))**(2)+sigma**(2)*(-5+6*omega*(ma+(-3j)))+10*sigma*(1+6*omega**(2)-3*omega*(ma+(-1j)))-4*(2+16*omega**(2)+omega*(-6*ma+(5j))))+kappa**(2)*sigma**(4)*(ma-2*omega)**(2)*(6+3*lam*(-1+sigma)+72*omega**(2)-6*sigma*(1+8*omega**(2)-2*omega*(ma+(-2j)))+6*omega*(-2*ma+(5j))+sigma**(2)*(1+omega*(6j)))+kappa**(4)*sigma**(2)*(lam**(2)*(-1+sigma)**(2)-2*lam*(-1+sigma)*(-1+sigma-24*omega**(2)+16*sigma*omega**(2)+omega*(8*ma+(-6j))+omega*sigma**(2)*(2*omega+(-1j))+omega*sigma*(-8*ma+(4j)))-2*omega*(-24*omega*ma**(2)*(-1+sigma)**(2)+2*sigma**(2)*(omega+24*omega**(3)+omega**(2)*(-90j)+(-5j))+sigma**(4)*(-2*omega+(1j))**(2)*(2*omega+(1j))-6*(3*omega+48*omega**(3)+(1j)+omega**(2)*(32j))+ma*(-1+sigma)*(3*sigma**(2)*(1+8*omega**(2)+omega*(-4j))+2*sigma*(5+48*omega**(2)+omega*(24j))-2*(5+96*omega**(2)+omega*(36j)))+sigma**(3)*(-16*omega-96*omega**(3)+(5j)+omega**(2)*(48j))+2*sigma*(14*omega+160*omega**(3)+(5j)+omega**(2)*(160j)))))
+    
     
     @staticmethod
-    def fTS_minus_to_plus_2(sigma, lam, omega):
-        return (16*(128j*omega**3 + 256*omega**4 + lam*(2 + lam)*(-1 + sigma)**2*sigma**2 + 4j*omega*sigma*(sigma*(-3 + 5*sigma) + lam*(-2 + sigma + sigma**2)) + 16*omega**2*(lam*(-1 + sigma)*(1 + 2*sigma**2) + sigma*(-3 + sigma*(3 + sigma*(-2 + 3*sigma))))))/sigma**6/(128j*omega*(-1 + 2j*omega)*(-1 + 4j*omega)*(1 + 4j*omega))
-    
-    @staticmethod
-    def gTS_minus_to_plus_2(sigma, lam, omega):
-        return (64j*omega*(-1 + sigma)*(16*omega**2 + 2*lam*(-1 + sigma)*sigma**2 + sigma**3*(-2 + 3*sigma)))/sigma**6/(128j*omega*(-1 + 2j*omega)*(-1 + 4j*omega)*(1 + 4j*omega))
+    def gTS_minus_to_plus_2(sigma, kappa, lam, ma, omega):
+        return -1*kappa**(-2)*sigma**(-6)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(1j))**(-1)*(2+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(-1*ma+2*(1+kappa)*omega)**(-1)*(-1+sigma)*(6*omega*ma**(2)*sigma**(4)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-1*sigma**(2))+ma*sigma**(2)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+ma**(3)*sigma**(6)+2*omega*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-1*kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6)))
     
     @staticmethod # NOT YET IMPLEMENTED!!!!
-    def fTS_plus_to_minus_1(sigma, lam, omega):
+    def fTS_plus_to_minus_1(sigma, kappa, lam, ma, omega):
         return 1.
     
     @staticmethod # NOT YET IMPLEMENTED!!!!
-    def gTS_plus_to_minus_1(sigma, lam, omega):
+    def gTS_plus_to_minus_1(sigma, kappa, lam, ma, omega):
         return 1.
     
     @staticmethod # NOT YET IMPLEMENTED!!!!
-    def fTS_minus_to_plus_1(sigma, lam, omega):
+    def fTS_minus_to_plus_1(sigma, kappa, lam, ma, omega):
         return 1.
     
     @staticmethod # NOT YET IMPLEMENTED!!!!
-    def gTS_minus_to_plus_1(sigma, lam, omega):
+    def gTS_minus_to_plus_1(sigma, kappa, lam, ma, omega):
         return 1.
     
     def sigmaOfR(self, r):
@@ -608,12 +630,18 @@ class TeukolskySolver:
     
     def Zsigma(self, sigma):
         return sigma/(2.*self.kappa)*(4*self.kappa**2*(1. - sigma)/sigma**2)**(-self.s)*xp.exp(1.j*(self.m*self.Phi_hbl(sigma) + self.frequency*self.height_function(sigma)))
-
+    
     def Zsigma_deriv(self, sigma):
-        return self.Zsigma(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
-
+        return self.Zsigma(sigma)*((self.kappa*self.frequency*sigma**(-2)*(-2j)+sigma**(-1)*(-1+sigma)**(-1)*(-1+sigma+self.s*(-2+sigma)+self.frequency*sigma*(-3j)+self.frequency*(2j))+self.kappa**(-1)*(-1+sigma)**(-1)*(1j)/(2)*(self.m*self.a-2*self.frequency)))
+    
     def Zsigma_deriv2(self, sigma):
-        return self.Zsigma(sigma)*(self.s/(1. - sigma)**2 - (1. + 2.*self.s)/sigma**2 + 1j*self.frequency*self.d2h_dsigma2(sigma) + 1j*self.m*self.d2Phi_dsigma2(sigma)) + self.Zsigma_deriv(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
+        return self.Zsigma(sigma)*(self.kappa**(-2)*sigma**(-4)*(-1+sigma)**(-2)*(-1/4)*((self.m*self.a)**(2)*sigma**(4)-4*self.kappa**(2)*sigma**(2)*self.s**(2)*(-2+sigma)**(2)-2*(self.m*self.a)*sigma**(2)*(4*self.frequency*self.kappa**(2)*(-1+sigma)+2*self.frequency*sigma**(2)+self.kappa*sigma*(-4*self.frequency+6*self.frequency*sigma+(-2j)+sigma*(1j)))+4*self.frequency*(4*self.frequency*self.kappa**(4)*(-1+sigma)**(2)+4*self.frequency*sigma*self.kappa**(3)*(2-5*sigma+3*sigma**(2))+self.frequency*sigma**(4)+self.kappa*sigma**(3)*(-4*self.frequency+(-2j)+sigma*(6*self.frequency+(1j)))+self.kappa**(2)*sigma**(2)*((2j)-2*sigma*(4*self.frequency+(3j))+sigma**(2)*(9*self.frequency+(3j))))+self.kappa*sigma*self.s*(4j)*(-1*sigma**(2)*(-2+sigma)*((self.m*self.a)-2*self.frequency)+4*self.frequency*self.kappa**(2)*(2-3*sigma+sigma**(2))+self.kappa*sigma*(8*self.frequency+sigma**(2)*(6*self.frequency+(1j))-2*sigma*(8*self.frequency+(1j))+(2j)))))
+    
+    # def Zsigma_deriv(self, sigma):
+    #     return self.Zsigma(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
+
+    # def Zsigma_deriv2(self, sigma):
+    #     return self.Zsigma(sigma)*(self.s/(1. - sigma)**2 - (1. + 2.*self.s)/sigma**2 + 1j*self.frequency*self.d2h_dsigma2(sigma) + 1j*self.m*self.d2Phi_dsigma2(sigma)) + self.Zsigma_deriv(sigma)*(1 + 2*self.s - (1. + self.s)*sigma + sigma*(1. - sigma)*1j*(self.m*self.dPhi_dsigma(sigma) + self.frequency*self.dh_dsigma(sigma)))/(sigma*(1. - sigma))
     
     def dPhi_dsigma(self, sigma):
         return -0.5*self.a/(1. - sigma)/self.kappa
@@ -629,7 +657,8 @@ class TeukolskySolver:
     
     def __flip_spin_coeffs(self, clist, dlist):
         s = -abs(self.s)
-        la = self.shifted_eigenvalue - s*(s+1)
+        # la = self.shifted_eigenvalue - s*(s+1)
+        la = self.shifted_eigenvalue
         domain_num, n = clist.shape
     
         if n == 16:
@@ -659,23 +688,23 @@ class TeukolskySolver:
         Mmat = np.empty((domain_num, n, n), dtype=np.cdouble)
         if self.s == 2:
             for i, sigmaNodes in enumerate(sigmaNodesTList):
-                Fmat = self.fTS_minus_to_plus_2(sigmaNodes, la, self.frequency)
-                Gmat = dxdsigma[i]*self.gTS_minus_to_plus_2(sigmaNodes, la, self.frequency)
+                Fmat = self.fTS_minus_to_plus_2(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
+                Gmat = dxdsigma[i]*self.gTS_minus_to_plus_2(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
                 Mmat[i] = xp.multiply(Fmat, Tmat0) + xp.multiply(Gmat, Tmat1)
         elif self.s == -2:
             for i, sigmaNodes in enumerate(sigmaNodesTList):
-                Fmat = self.fTS_plus_to_minus_2(sigmaNodes, la, self.frequency)
-                Gmat = dxdsigma[i]*self.gTS_plus_to_minus_2(sigmaNodes, la, self.frequency)
+                Fmat = self.fTS_plus_to_minus_2(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
+                Gmat = dxdsigma[i]*self.gTS_plus_to_minus_2(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
                 Mmat[i] = xp.multiply(Fmat, Tmat0) + xp.multiply(Gmat, Tmat1)
         elif self.s == 1: # NOT YET IMPLEMENTED!!!!
             for i, sigmaNodes in enumerate(sigmaNodesTList):
-                Fmat = self.fTS_minus_to_plus_1(sigmaNodes, la, self.frequency)
-                Gmat = dxdsigma[i]*self.gTS_minus_to_plus_1(sigmaNodes, la, self.frequency)
+                Fmat = self.fTS_minus_to_plus_1(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
+                Gmat = dxdsigma[i]*self.gTS_minus_to_plus_1(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
                 Mmat[i] = xp.multiply(Fmat, Tmat0) + xp.multiply(Gmat, Tmat1)
         elif self.s == -1: # NOT YET IMPLEMENTED!!!!
             for i, sigmaNodes in enumerate(sigmaNodesTList):
-                Fmat = self.fTS_plus_to_minus_1(sigmaNodes, la, self.frequency)
-                Gmat = dxdsigma[i]*self.gTS_plus_to_minus_1(sigmaNodes, la, self.frequency)
+                Fmat = self.fTS_plus_to_minus_1(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
+                Gmat = dxdsigma[i]*self.gTS_plus_to_minus_1(sigmaNodes, self.kappa, la, self.m*self.a, self.frequency)
                 Mmat[i] = xp.multiply(Fmat, Tmat0) + xp.multiply(Gmat, Tmat1)
   
         vvec = xp.array(clist.reshape((domain_num, n, 1)))
@@ -725,7 +754,7 @@ class TeukolskySolver:
             bc2 = xp.matmul(bc1, D)
     
         sigmaNodes = self.sigmaOfX(nodes, smin, smax)
-        dsigmadx = 1./self.dxOfSigma(smin, smax)
+        dsigmadx = self.dsigmaOfX(smin, smax)
         sigmaNodesT = sigmaNodes.reshape(n, 1)
         Pmat = self.__p_s(sigmaNodesT)
         Qmat = dsigmadx*self.__q_s(sigmaNodesT, s)
@@ -748,7 +777,7 @@ class TeukolskySolver:
         la = self.shifted_eigenvalue - s*(s+1)
         
         if subdomains == 0:
-            boundaryNum = np.amax([16, 4*self.l])
+            boundaryNum = np.amax([32, 4*self.l])
         else:
             boundaryNum = subdomains
     
@@ -771,7 +800,9 @@ class TeukolskySolver:
                 smin = cutIn
             b1 = b1sigma1(s, self.kappa, la, self.m*self.a, self.frequency)
             if boundaryNum > 1:
-                smax = 1 - 1/np.abs(b1)
+                smax = (1 - 1/np.abs(b1))
+                if smax < 0.75:
+                    smax = 0.75
                 if smax < smin:
                     smax = smin
                     boundaryNum = 1
@@ -785,21 +816,21 @@ class TeukolskySolver:
                 self.domains[bc][0] = 1
                 self.domains[bc][1:] = self.domains[bc][1:][::-1] # reverse list
         else:
-            self.domains[bc] = [smin, smax]
+            self.domains[bc] = [0, smax]
             if bc == 'In':
-                self.domains[bc] = [smax, smin]
+                self.domains[bc] = [1, smin]
 
         smin = self.domains[bc][0]
         smax = self.domains[bc][1]
 
-        dsigmadx = 1./dxOfSigma(smin, smax)
+        dsigmadx = self.dsigmaOfX(smin, smax)
     
         if bc == 'In':
-            psi0 = 2.*self.kappa*xp.exp(1.j*(0.5*self.m*self.a/self.horizon - 2.*self.frequency)*(1. + self.kappa + 2.*xp.log(self.kappa)))
+            psi0 = 2.*self.kappa*xp.exp(-1.j*(2.*self.frequency - 0.5*self.m*self.a/self.horizon)*(1. + self.kappa + 2.*xp.log(self.kappa)))
             dpsi0 = dsigmadx*b1sigma1(s, self.kappa, la, self.m*self.a, self.frequency)*psi0
         else:
             psi0 = 1.
-            dpsi0 = dsigmadx*a1sigma0(s, self.kappa, la, self.m*self.a, self.frequency)
+            dpsi0 = dsigmadx*a1sigma0(s, self.kappa, la, self.m*self.a, self.frequency)*psi0
 
         self.coeffs[s][bc] = xp.empty((boundaryNum, nsample), dtype=xp.cdouble)
         
@@ -811,7 +842,7 @@ class TeukolskySolver:
             dpsi0 = xp.sum(xp.matmul(_HBLTEUK_D100[:nsample,:nsample],self.coeffs[s][bc][i]))/dsigmadx
             smin = smax
             smax = boundary
-            dsigmadx = 1./dxOfSigma(smin, smax)
+            dsigmadx = self.dsigmaOfX(smin, smax)
             dpsi0 *= dsigmadx
             i += 1
             
@@ -917,12 +948,22 @@ Methods
 """
     
 class HyperboloidalTeukolsky(TeukolskySolver):
-    def solve(self, bc=['In','Up'], use_ts_transform=True, cutoff=[0,1], subdomains=0, chebyshev_samples=16):
+    def solve(self, bc=['In','Up'], use_ts_transform=True, cutoff=None, subdomains=0, chebyshev_samples=16):
 #         # set domain for solver
 #         self.domain = {'In': [self.default_smin(), 1.], 'Up': [0., self.default_smax()]}
+        if cutoff is None:
+            mincut = 0.
+            maxcut = 1.
+        elif isinstance(cutoff, list) or isinstance(cutoff, np.ndarray):
+            mincut = cutoff[0]
+            maxcut = cutoff[-1]
+        else:
+            mincut = cutoff
+            maxcut = mincut
+
         if isinstance(bc, list) or isinstance(bc, np.ndarray):
             for condition in bc:
-                self.solve(condition, use_ts_transform=use_ts_transform, cutoff=cutoff, subdomains=subdomains, chebyshev_samples=chebyshev_samples)
+                self.solve(condition, use_ts_transform=use_ts_transform, cutoff=[mincut, maxcut], subdomains=subdomains, chebyshev_samples=chebyshev_samples)
             return None
             
         start = time.time()
@@ -935,7 +976,7 @@ class HyperboloidalTeukolsky(TeukolskySolver):
         else:
             s = self.s
             
-        self._TeukolskySolver__solve_hyperboloidal_teukolsky_coeffs(s, bc, cutoff, subdomains, nsample=chebyshev_samples)
+        self._TeukolskySolver__solve_hyperboloidal_teukolsky_coeffs(s, bc, [mincut, maxcut], subdomains, nsample=chebyshev_samples)
                 
         if use_ts_transform and s*self.s < 0:
             self.flip_spin(bc)
@@ -1031,9 +1072,6 @@ def xOfSigma(sigma, smin, smax):
 
 def sigmaOfX(x, smin, smax):
     return ((smax - smin)*x + smax + smin)/2
-
-def dxOfSigma(smin, smax):
-    return 2/(smax - smin)
 
 # def hfunc(sigma):
 #     return 2/sigma - 2*np.log(sigma) - 2*np.log(1 - sigma)

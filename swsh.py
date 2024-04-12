@@ -2,7 +2,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 from scipy.special import sph_harm
 from scipy.special import binom
-from scipy.special import factorial
+from scipy.special import factorial, poch
 import numpy as np
 
 """
@@ -33,14 +33,25 @@ def YslmDerivative(s, l, m, th):
         return -np.sin(th)*YslmBaseDerivative(s, l, m, np.cos(th))
 
 def YslmBase(s, l, m, z):
-    rmax = l - s
-    pref = (0.5)**(l)*(-1.)**m*np.sqrt(factorial(l+m)/factorial(l+s)*factorial(l-m)/factorial(l-s)*(2*l+1)/(4.*np.pi))*np.sqrt(1. - z)**(s + m)*np.sqrt(1. + z)**(s - m)
+    rmax = int(np.min([l - s, l + m]))
+    x = (z + 1.)/(z - 1.)
+    delta = s - m 
+    rmin = int(np.max([0, -delta]))
+
+    pref = (0.5)**(l) * (-1.)**(l - s + m) * binom(l + s, delta + rmin)*binom(l - s, rmin)
+    pref *= np.sqrt(
+        poch(l + s + 1, m - s)
+        * poch(l - s + 1, s - m)
+        * (2 * l + 1)
+        / (4 * np.pi )
+    )
+
+    yslm = 0.*z + 1.
+    for r in range(rmax, rmin, -1):
+        an = (l - s - r + 1)*(l + m - r + 1)/(r*(delta + r))*x
+        yslm = 1 + an*yslm
     
-    yslm = 0.*pref
-    for r in range(0, rmax + 1):
-        yslm += binom(l - s, r)*binom(l + s, r + s - m)*(z - 1.)**(rmax - r)*(z + 1.)**(r)
-    
-    return pref*yslm
+    return pref * np.sqrt(1. - z)**(2*l + m - s) * np.sqrt(1. + z)**(s - m) * x**rmin * yslm
 
 def YslmBaseDerivative(s, l, m, z):
     rmax = l - s
@@ -56,7 +67,7 @@ def YslmBaseDerivative(s, l, m, z):
     return pref_derivative*yslm + pref*yslm_derivative
 
 def clebsch(l1, l2, l3, m1, m2, m3):
-    return (-1)**(l1 - l2 + m3)*np.sqrt(2*l3 + 1)*w3j(l1, l2, l3, m1, m2, -m3);
+    return (-1)**(l1 - l2 + m3)*np.sqrt(2*l3 + 1)*w3j(l1, l2, l3, m1, m2, -m3)
 
 def w3j(l1, l2, l3, m1, m2, m3):
     if m1 + m2 + m3 != 0:
@@ -320,7 +331,7 @@ class SpinWeightedSpheroidalHarmonic(SWSHSeriesBase):
             self.eval = self.Yslm
             self.deriv = self.Yslm_derivative
             self.eigenvalue = Yslm_eigenvalue(self.s, self.l)
-            self.coeffs = np.zeros(self.l - self.lmin)
+            self.coeffs = np.zeros(np.max([self.l - self.lmin, 1]))
             self.coeffs[-1] = 1.
         else:
             self.eval = self.Sslm
