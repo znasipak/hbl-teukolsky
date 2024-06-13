@@ -389,6 +389,60 @@ def Asjlm(s, j, l, m):
         return (-1.)**(m + s)*np.sqrt(4**s*fac(s)**2*(2*l + 1)*(2*j + 1)/fac(2*s))*w3j(s, l, j, 0, m, -m)*w3j(s, l, j, s, -s, 0)
     else:
         return (-1.)**(m)*np.sqrt(4**(-s)*fac(-s)**2*(2*l + 1)*(2*j + 1)/fac(-2*s))*w3j(-s, l, j, 0, m, -m)*w3j(-s, l, j, s, -s, 0)
+    
+from scipy.special import gammaln, lpmv
+from spherical import Wigner3j
+
+def Ylm(l, m, z):
+    return np.sqrt((2.*l + 1)/(4.*np.pi))*np.exp(0.5*(gammaln(l - m + 1) - gammaln(l + m + 1)))*lpmv(m, l, z)
+
+def clm(l, m):
+    if abs(m) > l:
+        return 0.
+    return np.sqrt((l - m)/(2.*l + 1.))*np.sqrt((l + m)/(2.*l - 1.))
+
+def Asljm(s, l, j, m): 
+    if np.abs(l-j) > np.abs(s): 
+        return 0.
+    if j < np.abs(m): 
+        return 0.
+    lmin = abs(s) if abs(m) < abs(s) else abs(m)
+    if l < lmin:
+        return 0
+    aslmg = pow(-1., m + s*(1 + np.sign(s))/2)
+    aslmg *= np.sqrt(pow(4, np.abs(s))*pow(factorial(np.abs(s)), 2)*(2*j + 1)*(2*l + 1)/factorial(np.abs(2*s)))
+    aslmg *= Wigner3j(abs(s), l, j, 0, m, -m)
+    aslmg *= Wigner3j(abs(s), l, j, s, -s, 0)
+
+    return aslmg
+
+def dAsljm(s, l, j, m): 
+    return (j + 2. + abs(s))*clm(j + 1, m)*Asljm(s, l, j + 1, m) - (j - 1 - abs(s))*clm(j, m)*Asljm(s, l, j - 1, m)
+
+def sphericalY_expansion(s, l, m, z):
+    if s==0:
+        return Ylm(l, m, z)
+    
+    lmin = np.max([np.abs(m), l - np.abs(s)])
+    lmax = l + np.abs(s)
+
+    yslm = 0.*z
+
+    for i in range(lmin, lmax + 1):
+        yslm += Asljm(s, l, i, m)*Ylm(i, m, z)
+
+    return yslm * np.sqrt(1. - z**2)**(-np.abs(s))
+
+def sphericalY_expansion_deriv(s, l, m, z):
+    lmin = np.max([np.abs(m), l - np.abs(s) - 1])
+    lmax = l + np.abs(s) + 1
+
+    yslm = 0.*z
+
+    for i in range(lmin, lmax + 1):
+        yslm += dAsljm(s, l, i, m)*Ylm(i, m, z)
+
+    return - yslm * np.sqrt(1. - z**2)**(-np.abs(s) - 1)
 
 def spin_operator_normalization(s, ns, l):
     s_sgn = np.sign(s)
@@ -397,4 +451,92 @@ def spin_operator_normalization(s, ns, l):
     for ni in range(1, ns + 1):
         Jterm *= -s_sgn*muCoupling((nmax1-ni), l)
     return Jterm
+
+class SpinWeightedSpherical:
+    def __init__(self, s, m, gamma, coeffs, tol = None):
+        self.mode_num = coeffs.shape[0]
+        self.s = s
+        self.m = m
+        self.gamma = gamma
+        self.lmin = np.max(np.abs([m,s]))
+        self.lmax = self.lmin + self.mode_num - 1
+
+        if tol is None or np.count_nonzero(gamma) == 0:
+            self.coeffs = coeffs.T
+        else:
+            self.coeffs = coeffs.T.copy()
+            self.coeffs[np.abs(self.coeffs) < tol] = 0
+            nonzero_count = self.lmax - 1 + np.max(np.count_nonzero(self.coeffs, axis = 0))
+            self.coeffs = self.coeffs[:nonzero_count]
+    
+    def Yslm(self, l, z):
+        return sphericalY_expansion(self.s, l, self.m, z)
+    
+    def Yslm_deriv(self, l, z):
+        return sphericalY_expansion_deriv(self.s, l, self.m, z)
+    
+    def eval(self, z):
+        Sslms = np.zeros((self.coeffs.shape[-1], ) + np.shape(z))
+        for j, coupling in enumerate(self.coeffs):
+            Sslms += np.tensordot(coupling, self.Yslm(self.lmin + j, z), axes=((),()))
+
+        return Sslms
+    
+    def deriv(self, z):
+        Sslms = np.zeros((self.coeffs.shape[-1], ) + np.shape(z))
+        for j, coupling in enumerate(self.coeffs):
+            Sslms += np.tensordot(coupling, self.Yslm_deriv(self.lmin + j, z), axes=((),()))
+
+        return Sslms
+    
+    def __call__(self, z):
+        return self.eval(z)
+    
+class MultiModeSpinWeightedSpherical:
+    def __init__(self, s, m_arr, gamma_arr, coeffs_arr, tol = None):
+        self.Sslm_dict = {}
+        self.tot_mode_num = 0
+        self.m_mode_num = len(m_arr)
+        self.gamma_arr = np.concatenate(gamma_arr)
+        self.m_arr = m_arr
+        for m, gamma, coeffs in zip(m_arr, gamma_arr, coeffs_arr):
+            self.Sslm_dict[m] = SpinWeightedSpherical(s, m, gamma, coeffs, tol=tol)
+            self.tot_mode_num += self.Sslm_dict[m].mode_num
+
+    def eval(self, z):
+        Sslm = np.empty((self.tot_mode_num, ) + np.shape(z))
+        iter_start = 0
+        iter_end = 0
+        for m in self.Sslm_dict.keys():
+            iter_end += self.Sslm_dict[m].mode_num
+            Sslm[iter_start:iter_end] = self.Sslm_dict[m].eval(z)
+            iter_start = iter_end
+        return Sslm
+    
+    def deriv(self, z):
+        Sslm = np.empty((self.tot_mode_num, ) + np.shape(z))
+        iter_start = 0
+        iter_end = 0
+        for m in self.Sslm_dict.keys():
+            iter_end += self.Sslm_dict[m].mode_num
+            Sslm[iter_start:iter_end] = self.Sslm_dict[m].deriv(z)
+            iter_start = iter_end
+        return Sslm
+
+    @property
+    def spheroidicities(self):
+        return self.gamma_arr
+    
+    def __call__(self, z):
+        return self.eval(z)
+    
+def spheroidal_harmonic_spherical_series_eval(s, m, z, coeffs, tol = 1e-15):
+    lmin = np.max([np.abs(m), np.abs(s)])
+    Sslm = 0.
+    lmodes = np.zeros(coeffs.shape, dtype=np.int64) + np.arange(coeffs.shape[-1], dtype=np.int64) + lmin
+    coeffs_tol = coeffs[np.abs(coeffs)>tol]
+    lmodes_tol = lmodes[np.abs(coeffs)>tol]
+    for l, coupling in zip(lmodes_tol, coeffs_tol):
+        Sslm += coupling*sphericalY_expansion(s, l, m, z)
+    return Sslm
         

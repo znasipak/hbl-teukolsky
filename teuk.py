@@ -6,6 +6,16 @@ import swsh
 
 import numba as nb
 
+# Real part of the Teukolsky-Starobinsky constant given in terms of (a, m, omega) 
+# and Chandrasekhar's spin-invariant eigenvalue lambdaCH = lambda_s + s(s+1) for s = pm 2
+def teukolsky_starobinsky_constant_D(m, a, omega, lambdaCH):
+	return np.sqrt((pow(lambdaCH, 2) + 4*m*a*omega - pow(2*a*omega, 2))*(pow(lambdaCH - 2., 2) + 36.*m*a*omega - pow(6.*a*omega, 2)) + (2.*lambdaCH - 1.)*(96.*pow(a*omega, 2) - 48.*m*a*omega) - pow(12.*a*omega, 2))
+
+# Complex Teukolsky-Starobinsky constant given in terms of (a, m, omega) 
+# and Chandrasekhar's spin-invariant eigenvalue lambdaCH = lambda_s + s(s+1) for s = pm 2
+def teukolsky_starobinsky_complex_constant(j, m, a, omega, lambdaCH):
+	return teukolsky_starobinsky_constant_D(m, a, omega, lambdaCH) + pow(-1., j + m)*12.*1j*omega
+
 @nb.njit
 def p_hbl(sigma):
     return sigma**2*(1 - sigma)
@@ -23,7 +33,7 @@ def u_hbl(sigma, kappa, s, lam, ma, omega):
 @nb.njit([nb.complex128[:,:](nb.float64[:], nb.float64, nb.int64, nb.float64, nb.float64, nb.float64), 
           nb.complex128[:,:](nb.float64[:], nb.float64, nb.float64, nb.float64, nb.float64, nb.float64),
           nb.complex128[:,:,:](nb.float64[:,:], nb.float64, nb.int64, nb.float64, nb.float64, nb.float64), 
-          nb.complex128[:,:,:](nb.float64[:,:], nb.float64, nb.float64, nb.float64, nb.float64, nb.float64)])
+          nb.complex128[:,:,:](nb.float64[:,:], nb.float64, nb.float64, nb.float64, nb.float64, nb.float64)], cache=True)
 def teuk_sys(sigma, kappa, s, lam, ma, omega):
     Ktilde = -((1 + s)*kappa + 1j*ma - 2j*(1 + kappa)*omega)/kappa
     P = sigma**2*(1 - sigma)
@@ -165,12 +175,12 @@ def boundary_condition_in(kappa, s, eigenvalue, ma, omega, scale = 1):
     dy0 = -u_hbl(1, kappa, s, eigenvalue, ma, omega)/q_hbl(1, kappa, s, ma, omega)*y0
     return [y0, dy0]
 
-def static_boundary_condition_up(kappa, s, l, scale = 1):
+def static_boundary_condition_up(s, l, scale = 1):
     y0 = scale
     dy0 = -u_hbl_static(0, s, l)/q_hbl_static(0, s, l)*y0
     return [y0, dy0]
 
-def static_boundary_condition_in(kappa, s, l, scale = 1):
+def static_boundary_condition_in(s, l, scale = 1):
     y0 = scale
     dy0 = -u_hbl_static(1, s, l)/q_hbl_static(1, s, l)*y0
     return [y0, dy0]
@@ -180,11 +190,13 @@ class HyperboloidalTeukolskySolver:
         if solver is None:
             solver = collocode.CollocationODEMultiDomainFixedStepSolver(n = 64, chtype = 1)
             solver_kwargs = {"subdomains": 10, "tol": 1e-11}
+        if "solver_kwargs" in solver_kwargs.keys():
+            solver_kwargs = solver_kwargs["solver_kwargs"]
 
         self.solver = solver
         self.solver_kwargs = {"In": solver_kwargs.copy(), "Up": solver_kwargs.copy()}
 
-        if "subdomains" in solver_kwargs:
+        if "subdomains" in solver_kwargs.keys():
             subdomains = solver_kwargs["subdomains"]
             if isinstance(subdomains, dict):
                 self.solver_kwargs["Up"]["subdomains"] = subdomains["Up"]
@@ -242,7 +254,7 @@ class HyperboloidalTeukolskySolver:
             out.Z_sigma_deriv = out.Z_radiative_deriv
             out.Z_sigma_deriv2 = out.Z_radiative_deriv2
 
-    def __call__(self, a, s, l, m, omega, eigenvalue = None, rescale = True, reduce = False, **reduce_kwargs):
+    def __call__(self, a, s, l, m, omega, eigenvalue = None, rescale = False, reduce = False, **reduce_kwargs):
         hbl = HyperboloidalTeukolsky(a, s, l, m, omega, eigenvalue)
         ma = m*a
         psi = {"In": None, "Up": None}
@@ -258,10 +270,10 @@ class HyperboloidalTeukolskySolver:
             psi["In"] = self.solver(teuk_sys, bcIn, args = (hbl.kappa, hbl.s, hbl.eigenvalue, ma, hbl.frequency), domain = self.domain["In"], **self.solver_kwargs["In"])
         else:
             y0 = 1
-            bcUp = static_boundary_condition_up(np.abs(hbl.s), self.l, scale = y0)
+            bcUp = static_boundary_condition_up(np.abs(hbl.s), hbl.l, scale = y0)
 
             y1 = 1
-            bcIn = static_boundary_condition_in(np.abs(hbl.s), self.l, scale = y1)
+            bcIn = static_boundary_condition_in(np.abs(hbl.s), hbl.l, scale = y1)
 
             psi["Up"] = self.solver(teuk_static_sys, bcUp, args = (np.abs(hbl.s), hbl.l), domain = self.domain["Up"], **self.solver_kwargs["Up"])
             psi["In"] = self.solver(teuk_static_sys, bcIn, args = (np.abs(hbl.s), hbl.l), domain = self.domain["In"], **self.solver_kwargs["In"])
@@ -269,27 +281,21 @@ class HyperboloidalTeukolskySolver:
             if rescale: # rescale hyperboloidal solutions to the static equation to match the scaling of the radiative modes
                 dimensions = psi["Up"].coeffs.shape
                 n = dimensions[-1]
-                solver_kwargs = {}
 
                 if len(dimensions) > 1 and dimensions[0] > 1:
                     solver = collocode.CollocationAlgebraMultiDomain(n)
                 else:
                     solver = collocode.CollocationAlgebra(n)
 
+                hbl_static = ScaledStaticTeukolskyHyperboloidalSlicingRadialCompactification(hbl.a, hbl.s, hbl.l)
+
                 def psi_rescale(sigma, bc):
-                    return hbl.Z_static_rescale(sigma)*psi[bc](sigma)
+                    return hbl_static.Z_rescale(sigma)*psi[bc](sigma)
                 
-                psi["Up"] = solver(psi_rescale, args=("Up",), domain = hbl.domains["Up"], **solver_kwargs)
-                psi["In"] = solver(psi_rescale, args=("In",), domain = hbl.domains["In"], **solver_kwargs)
-            else:
-                if hbl.s >= 0:
-                    hbl.Z_sigma = hbl.Z_static_plus
-                    hbl.Z_sigma_deriv = hbl.Z_static_plus_deriv
-                    hbl.Z_sigma_deriv2 = hbl.Z_static_plus_deriv2
-                else:
-                    hbl.Z_sigma = hbl.Z_static_minus
-                    hbl.Z_sigma_deriv = hbl.Z_static_minus_deriv
-                    hbl.Z_sigma_deriv2 = hbl.Z_static_minus_deriv2
+                psi["Up"] = solver(psi_rescale, args=("Up",), domain = self.solver_kwargs["Up"]["subdomains"])
+                psi["In"] = solver(psi_rescale, args=("In",), domain = self.solver_kwargs["In"]["subdomains"])
+
+            # need to fix for when rescale is False. Currently will give the wrong scaling functions
 
         if reduce:
             if "solver" in reduce_kwargs.keys():
@@ -301,7 +307,7 @@ class HyperboloidalTeukolskySolver:
                     reduce_solver = collocode.CollocationAlgebra()
 
             for key in psi.keys():
-                psi[key] = reduce_solver(psi[key], domain = hbl.domain[key], **reduce_kwargs)
+                psi[key] = reduce_solver(psi[key], domain = self.domain[key], **reduce_kwargs)
 
         hbl.set_solutions(psi)
 
@@ -402,6 +408,18 @@ class RadialCompactification:
     def deriv2_with_r(self, r):
         sigma = self.sigma_r(r)
         return self.sigma_r_deriv2_sigma(sigma)*self.deriv(sigma) + self.sigma_r_deriv_sigma(sigma)**2*self.deriv2(sigma)
+    
+    def eval_with_r_f(self, r, f):
+        sigma = self.sigma_r(r)
+        return f(sigma)
+    
+    def deriv_with_r_f(self, r, df):
+        sigma = self.sigma_r(r)
+        return self.sigma_r_deriv_sigma(sigma)*df(sigma)
+    
+    def deriv2_with_r_f(self, r, df, ddf):
+        sigma = self.sigma_r(r)
+        return self.sigma_r_deriv2_sigma(sigma)*df(sigma) + self.sigma_r_deriv_sigma(sigma)**2*ddf(sigma)
     
 class ScaledTeukolsky:
     def __init__(self, a, s):
@@ -562,16 +580,6 @@ class HyperboloidalTeukolsky(ScaledTeukolskyModeHyperboloidalSlicingRadialCompac
     def __call__(self, bc, sigma, deriv = 0, slicing = "hyperboloidal", scaled = True, compactification = True):
         return self.psi[bc](sigma, deriv, slicing, scaled, compactification)
 
-# Real part of the Teukolsky-Starobinsky constant given in terms of (a, m, omega) 
-# and Chandrasekhar's spin-invariant eigenvalue lambdaCH = lambda_s + s(s+1) for s = pm 2
-def teukolsky_starobinsky_constant_D(m, a, omega, lambdaCH):
-	return np.sqrt((pow(lambdaCH, 2) + 4*m*a*omega - pow(2*a*omega, 2))*(pow(lambdaCH - 2., 2) + 36.*m*a*omega - pow(6.*a*omega, 2)) + (2.*lambdaCH - 1.)*(96.*pow(a*omega, 2) - 48.*m*a*omega) - pow(12.*a*omega, 2))
-
-# Complex Teukolsky-Starobinsky constant given in terms of (a, m, omega) 
-# and Chandrasekhar's spin-invariant eigenvalue lambdaCH = lambda_s + s(s+1) for s = pm 2
-def teukolsky_starobinsky_complex_constant(j, m, a, omega, lambdaCH):
-	return teukolsky_starobinsky_constant_D(m, a, omega, lambdaCH) + pow(-1., j + m)*12.*1j*omega
-
 class ScaledStaticPlusTeukolsky(ScaledTeukolsky):
     def __init__(self, a, s, l):
         self.a = a
@@ -610,11 +618,20 @@ class ScaledStaticMinusTeukolsky(ScaledTeukolsky):
     def Z_rescale(self, sigma):
         return self.Z_scale(sigma)/Z_scale(sigma, self.kappa, self.s)
     
-class ScaledStaticTeukolskyHyperboloidalSlicingRadialCompactification(ScaledStaticPlusTeukolsky, ScaledStaticMinusTeukolsky, HyperboloidalSlicing, RadialCompactification):
+class ScaledStaticPlusTeukolskyHyperboloidalSlicingRadialCompactification(ScaledStaticPlusTeukolsky, HyperboloidalSlicing, RadialCompactification):
     def __init__(self, a, s, l):
-        if s >= 0:
-            ScaledStaticPlusTeukolsky.__init__(self, a, s, l)
-        else:
-            ScaledStaticMinusTeukolsky.__init__(self, a, s, l)
+        ScaledStaticPlusTeukolsky.__init__(self, a, s, l)
         HyperboloidalSlicing.__init__(self, a)
         RadialCompactification.__init__(self, a)
+
+class ScaledStaticMinusTeukolskyHyperboloidalSlicingRadialCompactification(ScaledStaticMinusTeukolsky, HyperboloidalSlicing, RadialCompactification):
+    def __init__(self, a, s, l):
+        ScaledStaticMinusTeukolsky.__init__(self, a, s, l)
+        HyperboloidalSlicing.__init__(self, a)
+        RadialCompactification.__init__(self, a)
+
+def ScaledStaticTeukolskyHyperboloidalSlicingRadialCompactification(a, s, l):
+    if s >= 0:
+        return ScaledStaticPlusTeukolskyHyperboloidalSlicingRadialCompactification(a, s, l)
+    else:
+        return ScaledStaticMinusTeukolskyHyperboloidalSlicingRadialCompactification(a, s, l)

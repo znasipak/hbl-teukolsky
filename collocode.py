@@ -74,16 +74,38 @@ for num in _precomputed_grid_numbers:
         _CHEBY_bcs_end[2][num][bcnum] = xp.array(ch.chebvander(_CHEBY_nodes[2][num][-1-bcnum], num-1))
 
 def x_of_z(z, zmin, zmax):
+    '''
+    Performs an affine transformation of the variable z on the domain [zmin, zmax] to the variable x on the domain [-1,1]
+    '''
     return (2*z - (zmax + zmin))/(zmax - zmin)
 
 def z_of_x(x, zmin, zmax):
+    '''
+    Performs an affine transformation of the variable x on the domain [-1,1] to the variable  z on the domain [zmin, zmax]
+    '''
     return ((zmax - zmin)*x + zmax + zmin)/2
 
 def dx_dz(zmin, zmax):
+    '''
+    Derivative of the transformation x_of_z with respect to z
+    '''
     return 2/(zmax - zmin)
 
 def dz_dx(zmin, zmax):
+    '''
+    Derivative of the transformation z_of_x with respect to x
+    '''
     return (zmax - zmin)/2
+
+def multi_domain_chebyshev_nodes(n, domains, type = 1):
+    if type == 2:
+        xnodes = ch.chebpts2(n)
+    else:
+        xnodes = ch.chebpts1(n)
+
+    n_domains = len(domains) - 1
+    return np.array([z_of_x(xnodes, domains[i], domains[i+1]) for i in range(n_domains)]) 
+
 
 # @jitclass([
 #     ('coeffs', nb.complex128[:]),
@@ -180,13 +202,12 @@ class CollocationODEFixedStepSolver:
         Pmat = Pmat_T.reshape(self.n, 1)
         Qmat = dzdx*(Qmat_T.reshape(self.n, 1))
         Umat = dzdx**2*(Umat_T.reshape(self.n, 1))
-        # Pmat, Qmat, Umat = ode_sys(z_nodes_T, *args)
         result = CoefficientGenerator(Pmat, Qmat, Umat, self.Tmat2, self.Tmat1, self.Tmat0, xp.asarray(y0), self.bcs)
 
         return result.coeffs, result.error
     
     def solve_ode(self, ode_sys, y0, args = (), domain = [-1, 1]):
-        assert (len(y0) >= 2)
+        # assert (len(y0) >= 2)
         yi = y0.copy()
         if self.bctype == 1:
             dzdx = dz_dx(domain[0], domain[1])
@@ -520,7 +541,7 @@ class CollocationODEMultiDomainFixedStepSolver(CollocationODEFixedStepSolver):
             ii = 0
             while error > tol and ii < itermax:
                 subdomains_temp = subdivide_subdomains(subdomains, i)
-                if np.abs(subdomains_temp[i+1] - subdomains_temp[i]) > 5e-6:
+                if np.abs(subdomains_temp[i+1] - subdomains_temp[i]) > 5e-8:
                     if self.bctype == 1:
                         dzdx0 = dz_dx(subdomains[i], subdomains[i+1])
                         dzdx1 = dz_dx(subdomains_temp[i], subdomains_temp[i+1])

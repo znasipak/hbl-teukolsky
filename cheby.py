@@ -8,9 +8,10 @@ from numba import njit
 import numba as nb
 from numba import config
 
-# config.DISABLE_JIT = True
+def isvec(var):
+    return isinstance(var, xp.ndarray) or isinstance(var, list)
 
-@njit
+@njit(cache=True)
 def cheby_D_jit(n, dtype = np.float64):
     Dmat = xp.zeros((n, n), dtype=dtype)
     j = 1
@@ -27,10 +28,10 @@ def cheby_D_jit(n, dtype = np.float64):
 _CHEBY_dsize = 2000
 _CHEBY_DMAX = cheby_D_jit(_CHEBY_dsize)
 
-@njit([nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:]),
-       nb.complex128[:](nb.complex128[:], nb.float64[:], nb.float64[:]),
-       nb.float64[:,:](nb.float64[:], nb.float64[:], nb.float64[:,:]),
-       nb.complex128[:,:](nb.complex128[:], nb.float64[:], nb.float64[:,:])])
+# @njit([nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:]),
+#        nb.complex128[:](nb.complex128[:], nb.float64[:], nb.float64[:]),
+#        nb.float64[:,:](nb.float64[:], nb.float64[:], nb.float64[:,:]),
+#        nb.complex128[:,:](nb.complex128[:], nb.float64[:], nb.float64[:,:])], cache=True)
 def clenshaw_evaluation(coeffs, domain, x):
     # x = 0.5*((domain[1] - domain[0])*x_shift + domain[1] + domain[0])
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
@@ -46,10 +47,10 @@ def clenshaw_evaluation(coeffs, domain, x):
 
     return (coeffs[0] + x_shift*bkp0 - bkp1)
 
-@njit([nb.float64[:,:](nb.float64[:,:], nb.float64[:], nb.float64[:]),
-       nb.complex128[:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:]),
-       nb.float64[:,:,:](nb.float64[:,:], nb.float64[:], nb.float64[:,:]),
-       nb.complex128[:,:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:,:])])
+# @njit([nb.float64[:,:](nb.float64[:,:], nb.float64[:], nb.float64[:]),
+#        nb.complex128[:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:]),
+#        nb.float64[:,:,:](nb.float64[:,:], nb.float64[:], nb.float64[:,:]),
+#        nb.complex128[:,:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:,:])], cache=True)
 def clenshaw_evaluation_2d(coeffs, domain, x):
     # x = 0.5*((domain[1] - domain[0])*x_shift + domain[1] + domain[0])
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
@@ -67,10 +68,10 @@ def clenshaw_evaluation_2d(coeffs, domain, x):
 
     return (coeffs[0] + x_shift*bkp0 - bkp1)
 
-@njit([nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:]),
-       nb.complex128[:](nb.complex128[:], nb.float64[:], nb.float64[:]),
-       nb.float64[:,:](nb.float64[:], nb.float64[:], nb.float64[:,:]),
-       nb.complex128[:,:](nb.complex128[:], nb.float64[:], nb.float64[:,:])])
+# @njit([nb.float64[:](nb.float64[:], nb.float64[:], nb.float64[:]),
+#        nb.complex128[:](nb.complex128[:], nb.float64[:], nb.float64[:]),
+#        nb.float64[:,:](nb.float64[:], nb.float64[:], nb.float64[:,:]),
+#        nb.complex128[:,:](nb.complex128[:], nb.float64[:], nb.float64[:,:])], cache=True)
 def clenshaw_deriv_evaluation(coeffs, domain, x):
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
     dx = 2./(domain[1] - domain[0])
@@ -91,10 +92,10 @@ def clenshaw_deriv_evaluation(coeffs, domain, x):
     beta = -nb.float64(i + 2.)/nb.float64(i)
     return dx*(coeffs[1] + 4*x_shift*bkp0 + beta*bkp1)
 
-@njit([nb.float64[:,:](nb.float64[:,:], nb.float64[:], nb.float64[:]),
-       nb.complex128[:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:]),
-       nb.float64[:,:,:](nb.float64[:,:], nb.float64[:], nb.float64[:,:]),
-       nb.complex128[:,:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:,:])])
+# @njit([nb.float64[:,:](nb.float64[:,:], nb.float64[:], nb.float64[:]),
+#        nb.complex128[:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:]),
+#        nb.float64[:,:,:](nb.float64[:,:], nb.float64[:], nb.float64[:,:]),
+#        nb.complex128[:,:,:](nb.complex128[:,:], nb.float64[:], nb.float64[:,:])], cache=True)
 def clenshaw_deriv_evaluation_2d(coeffs, domain, x):
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
     dx = 2./(domain[1] - domain[0])
@@ -117,8 +118,8 @@ def clenshaw_deriv_evaluation_2d(coeffs, domain, x):
     beta = -nb.float64(i + 2.)/nb.float64(i)
     return dx*(coeffs[1] + 4*x_shift*bkp0 + beta*bkp1)
 
-@njit([nb.float64(nb.float64[:], nb.float64[:], nb.float64),
-       nb.complex128(nb.complex128[:], nb.float64[:], nb.float64)])
+# @njit([nb.float64(nb.float64[:], nb.float64[:], nb.float64),
+#        nb.complex128(nb.complex128[:], nb.float64[:], nb.float64)], cache=True)
 def clenshaw_evaluation_scalar(coeffs, domain, x):
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
     N = len(coeffs)
@@ -133,8 +134,8 @@ def clenshaw_evaluation_scalar(coeffs, domain, x):
 
     return (coeffs[0] + x_shift*bkp0 - bkp1)
 
-@njit([nb.float64[:](nb.float64[:,:], nb.float64[:], nb.float64),
-       nb.complex128[:](nb.complex128[:,:], nb.float64[:], nb.float64)])
+# @njit([nb.float64[:](nb.float64[:,:], nb.float64[:], nb.float64),
+#        nb.complex128[:](nb.complex128[:,:], nb.float64[:], nb.float64)], cache=True)
 def clenshaw_evaluation_2d_scalar(coeffs, domain, x):
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
 
@@ -150,8 +151,8 @@ def clenshaw_evaluation_2d_scalar(coeffs, domain, x):
 
     return (coeffs[0] + x_shift*bkp0 - bkp1)
 
-@njit([nb.float64(nb.float64[:], nb.float64[:], nb.float64),
-       nb.complex128(nb.complex128[:], nb.float64[:], nb.float64)])
+# @njit([nb.float64(nb.float64[:], nb.float64[:], nb.float64),
+#        nb.complex128(nb.complex128[:], nb.float64[:], nb.float64)], cache=True)
 def clenshaw_deriv_evaluation_scalar(coeffs, domain, x):
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
     dx = 2./(domain[1] - domain[0])
@@ -172,8 +173,8 @@ def clenshaw_deriv_evaluation_scalar(coeffs, domain, x):
     beta = -nb.float64(i + 2.)/nb.float64(i)
     return dx*(coeffs[1] + 4*x_shift*bkp0 + beta*bkp1)
 
-@njit([nb.float64[:](nb.float64[:,:], nb.float64[:], nb.float64),
-       nb.complex128[:](nb.complex128[:,:], nb.float64[:], nb.float64)])
+# @njit([nb.float64[:](nb.float64[:,:], nb.float64[:], nb.float64),
+#        nb.complex128[:](nb.complex128[:,:], nb.float64[:], nb.float64)], cache=True)
 def clenshaw_deriv_evaluation_2d_scalar(coeffs, domain, x):
     x_shift = (2.*x - (domain[1] + domain[0]))/(domain[1] - domain[0])
     dx = 2./(domain[1] - domain[0])
@@ -195,7 +196,7 @@ def clenshaw_deriv_evaluation_2d_scalar(coeffs, domain, x):
     beta = -nb.float64(i + 2.)/nb.float64(i)
     return dx*(coeffs[1] + 4*x_shift*bkp0 + beta*bkp1)
 
-@njit(nb.int64(nb.float64, nb.float64[:], nb.int64))
+# @njit(nb.int64(nb.float64, nb.float64[:], nb.int64), cache=True)
 def find_domain(sigma, domains, i0):
     for i in range(i0, len(domains) - 1):
         if xp.real(sigma) <= domains[i+1] and xp.real(sigma) >= domains[i]:
@@ -229,9 +230,9 @@ def multi_chebyshev_deriv(sigma, coef_array, domains, ordering = 1, i0 = 0):
     i0 = find_domain(sigma, domains, i0)
     return i0, clenshaw_deriv_evaluation_scalar(coef_array[i0], domains[i0:i0+2][::ordering], sigma)
 
-@njit(nb.int64[:](nb.float64[:], nb.float64[:], nb.int64))
+# @njit(nb.int64[:](nb.float64[:], nb.float64[:], nb.int64), cache=True)
 def find_domain_vec(sigmas, domains, i0):
-    domain_ii = xp.empty(len(sigmas), dtype = nb.int64)
+    domain_ii = xp.empty(len(sigmas), dtype = xp.int64)
     for ii, sigma in enumerate(sigmas):
         i0 = find_domain(sigma, domains, i0)
         domain_ii[ii] = i0
@@ -248,8 +249,8 @@ def multi_chebyshev_deriv_vec(sigmas, coef_array, domains, ordering):
     sigmas_1d = sigmas.flatten()
     return multi_chebyshev_deriv_jit_vec(sigmas_1d, coef_array, domains, ordering).reshape(sigmas_shape)
 
-@njit([nb.float64[:](nb.float64[:], nb.float64[:,:], nb.float64[:], nb.int64),
-       nb.complex128[:](nb.float64[:], nb.complex128[:,:], nb.float64[:], nb.int64)])
+# @njit([nb.float64[:](nb.float64[:], nb.float64[:,:], nb.float64[:], nb.int64),
+#        nb.complex128[:](nb.float64[:], nb.complex128[:,:], nb.float64[:], nb.int64)], cache=True)
 def multi_chebyshev_jit_vec(sigmas, coef_array, domains, ordering):
     coefdtype = coef_array[0].dtype
     chebevalList = xp.empty(len(sigmas), dtype=coefdtype)
@@ -260,8 +261,20 @@ def multi_chebyshev_jit_vec(sigmas, coef_array, domains, ordering):
 
     return chebevalList
 
-@njit([nb.float64[:](nb.float64[:], nb.float64[:,:], nb.float64[:], nb.int64),
-       nb.complex128[:](nb.float64[:], nb.complex128[:,:], nb.float64[:], nb.int64)])
+# @njit([nb.float64[:,:](nb.float64[:], nb.float64[:,:,:], nb.float64[:], nb.int64),
+#        nb.complex128[:,:](nb.float64[:], nb.complex128[:,:,:], nb.float64[:], nb.int64)], cache=True)
+def multi_chebyshev_jit_vec_2d(sigmas, coef_array, domains, ordering):
+    coefdtype = coef_array[0].dtype
+    chebevalList = xp.empty((len(sigmas), coef_array.shape[-1]), dtype=coefdtype)
+    domain_ii = find_domain_vec(sigmas, domains, 0)
+    for i in range(len(sigmas)):
+        i0 = domain_ii[i]
+        chebevalList[i] = clenshaw_evaluation_2d_scalar(coef_array[i0], domains[i0:i0+2][::ordering], sigmas[i])
+
+    return chebevalList
+
+# @njit([nb.float64[:](nb.float64[:], nb.float64[:,:], nb.float64[:], nb.int64),
+#        nb.complex128[:](nb.float64[:], nb.complex128[:,:], nb.float64[:], nb.int64)], cache=True)
 def multi_chebyshev_deriv_jit_vec(sigmas, coef_array, domains, ordering):
     coefdtype = coef_array[0].dtype
     chebevalList = xp.empty(len(sigmas), dtype=coefdtype)
@@ -269,6 +282,18 @@ def multi_chebyshev_deriv_jit_vec(sigmas, coef_array, domains, ordering):
     for i in range(len(sigmas)):
         i0 = domain_ii[i]
         chebevalList[i] = clenshaw_deriv_evaluation_scalar(coef_array[i0], domains[i0:i0+2][::ordering], sigmas[i])
+
+    return chebevalList
+
+# @njit([nb.float64[:,:](nb.float64[:], nb.float64[:,:,:], nb.float64[:], nb.int64),
+#        nb.complex128[:,:](nb.float64[:], nb.complex128[:,:,:], nb.float64[:], nb.int64)], cache=True)
+def multi_chebyshev_deriv_jit_vec_2d(sigmas, coef_array, domains, ordering):
+    coefdtype = coef_array[0].dtype
+    chebevalList = xp.empty((len(sigmas), coef_array.shape[-1]), dtype=coefdtype)
+    domain_ii = find_domain_vec(sigmas, domains, 0)
+    for i in range(len(sigmas)):
+        i0 = domain_ii[i]
+        chebevalList[i] = clenshaw_deriv_evaluation_2d_scalar(coef_array[i0], domains[i0:i0+2][::ordering], sigmas[i])
 
     return chebevalList
 
@@ -388,8 +413,8 @@ def chebdiv_jit(c1, c2):
 def chebpow_jit(c1, pow):
     return ch.chebpow(c1, pow)
 
-@njit([nb.float64[:,:](nb.float64[:,::1], nb.int64, nb.float64[:]),
-       nb.complex128[:,:](nb.complex128[:,::1], nb.int64, nb.float64[:])])
+# @njit([nb.float64[:,:](nb.float64[:,::1], nb.int64, nb.float64[:]),
+#        nb.complex128[:,:](nb.complex128[:,::1], nb.int64, nb.float64[:])], cache=True)
 def chebdiff_jit(c, m, scl):
     # function for differentiating chebyshev series
     ndomain, nsample = c.shape
@@ -406,20 +431,20 @@ def chebdiff_jit(c, m, scl):
         
     return derivcoefflist
 
-@njit
+# @njit(cache=True)
 def chebdiff_2d_jit(c, m, scl):
     # function for differentiating chebyshev series
-    ngrid, ndomain, nsample = c.shape
+    ndomain, nsample, ngrid = c.shape
     assert ndomain == scl.shape[0]
     D = cheby_D_jit(nsample, dtype = c.dtype) # differential matrix
-    derivcoefflist = np.empty((ngrid, ndomain, nsample - m), dtype = c.dtype)
+    derivcoefflist = np.empty((ndomain, nsample - m, ngrid), dtype = c.dtype)
     for j in range(ngrid):
         for i in range(ndomain):
-            derivcoeff = c[j,i][:-1] # throw away last coefficient because you lose one-order in the series for each derivative
+            derivcoeff = c[i,:,j]
             dx = scl[i] # jacobian for variable transformation
             for _ in range(m): # apply derivative operator m-times
                 derivcoeff = dx*(D @ derivcoeff)
-            derivcoefflist[j,i] = derivcoeff[:-m]
+            derivcoefflist[i,:,j] = derivcoeff[:-m]
 
     return derivcoefflist
 
@@ -452,14 +477,14 @@ class MultiDomainChebyshev:
         self.i0 = 0
             
     def eval(self, sigma):
-        if isinstance(sigma, np.ndarray):
+        if isvec(sigma):
             return multi_chebyshev_vec(sigma, self.sorted_coeffs, self.sorted_domains, self.ordering)
         else:
             self.i0, val = multi_chebyshev(sigma, self.sorted_coeffs, self.sorted_domains, self.ordering, self.i0)
             return val
         
     def deriv(self, sigma):
-        if isinstance(sigma, np.ndarray):
+        if isvec(sigma):
             return multi_chebyshev_deriv_vec(sigma, self.sorted_coeffs, self.sorted_domains, self.ordering)
         else:
             self.i0, val = multi_chebyshev_deriv(sigma, self.sorted_coeffs, self.sorted_domains, self.ordering, self.i0)
@@ -472,7 +497,7 @@ class MultiDomainChebyshev:
             return self.eval_deriv(self, sigma)
         
         derivlist = chebdiff_jit(self.sorted_coeffs, n, self.domain_scale)
-        if isinstance(sigma, np.ndarray):
+        if isvec(sigma):
             return multi_chebyshev_vec(sigma, derivlist, self.sorted_domains, self.ordering)
         else:
             self.i0, val = multi_chebyshev(sigma, derivlist, self.sorted_domains, self.ordering, self.i0)
@@ -580,16 +605,16 @@ class MultiGridMultiDomainChebyshev:
     # Note that this class assumes that you are working on a fixed multi-domain for each slice of the grid
     def __init__(self, coeffList, domainList):
         self.coeffs = xp.asarray(coeffList)
-        self.coeffs_internal = xp.ascontiguousarray(xp.moveaxis(self.coeffs, 0, -1)) # this is the better way to store the data
-        self.domains = xp.asarray(domainList)
         self.ngrid, self.ndomain, self.nsample = self.coeffs.shape
+        self.coeffs = xp.ascontiguousarray(xp.moveaxis(self.coeffs, 0, -1)) # this is the better way to store the data
+        self.domains = xp.asarray(domainList)
 
         self.domain_shift = -(self.domains[:-1] + self.domains[1:])/(self.domains[1:] - self.domains[:-1])
         self.domain_scale = 2./(self.domains[1:] - self.domains[:-1])
 
         if self.domains[0] > self.domains[1]:
             # reverse
-            self.sorted_coeffs = self.coeffs[:, ::-1]
+            self.sorted_coeffs = self.coeffs[::-1]
             self.sorted_domains = self.domains[::-1]
             self.sorted_domain_shift = self.domain_shift[::-1]
             self.sorted_domain_scale = self.domain_scale[::-1]
@@ -608,10 +633,11 @@ class MultiGridMultiDomainChebyshev:
         self.i0 = 0
             
     def eval(self, sigma):
-        if isinstance(sigma, np.ndarray):
-            out = np.zeros((self.ngrid, len(sigma)), dtype = self.dtype)
-            for j in range(self.ngrid):
-                out[j] = multi_chebyshev_vec(sigma, self.sorted_coeffs[j], self.sorted_domains[j], self.ordering)
+        if isvec(sigma):
+            # out = np.zeros((self.ngrid, len(sigma)), dtype = self.dtype)
+            # for j in range(self.ngrid):
+            #     out[j] = multi_chebyshev_vec(sigma, self.sorted_coeffs[j], self.sorted_domains, self.ordering)
+            out = multi_chebyshev_jit_vec_2d(sigma, self.sorted_coeffs, self.sorted_domains, self.ordering)
         else:
             out = np.zeros(self.ngrid, dtype = self.dtype)
             for j in range(self.ngrid): 
@@ -621,10 +647,8 @@ class MultiGridMultiDomainChebyshev:
         return out
         
     def deriv(self, sigma):
-        if isinstance(sigma, np.ndarray):
-            out = np.zeros((self.ngrid, len(sigma)), dtype = self.dtype)
-            for j in range(self.ngrid):
-                out[j] = multi_chebyshev_deriv_vec(sigma, self.sorted_coeffs[j], self.sorted_domains[j], self.ordering)
+        if isvec(sigma):
+            out = multi_chebyshev_deriv_jit_vec_2d(sigma, self.sorted_coeffs, self.sorted_domains, self.ordering)
         else:
             out = np.zeros((self.ngrid), dtype = self.dtype)
             for j in range(self.ngrid): 
@@ -636,19 +660,14 @@ class MultiGridMultiDomainChebyshev:
     def derivn(self, sigma, n = 2):
         if n == 0:
             return self.eval(sigma)
-        elif n == 1:
-            return self.eval_deriv(sigma)
-
-        derivlist = chebdiff_2d_jit(self.sorted_coeffs, n, self.domain_scale)
-        if isinstance(sigma, np.ndarray):
-            out = np.zeros((self.ngrid, len(sigma)), dtype = self.dtype)
-            derivlist = chebdiff_2d_jit(self.sorted_coeffs, n, self.domain_scale)
-            for j in range(self.ngrid):
-                out[j] = multi_chebyshev_deriv_vec(sigma, derivlist[j], self.sorted_domains[j], self.ordering)
+        
+        derivlist = chebdiff_2d_jit(self.sorted_coeffs, n, self.sorted_domain_scale)
+        if isvec(sigma):
+            out = multi_chebyshev_jit_vec_2d(sigma, derivlist, self.sorted_domains, self.ordering)
         else:
-            out = np.zeros((self.ngrid), dtype = self.dtype)
+            out = np.zeros(self.ngrid, dtype = self.dtype)
             for j in range(self.ngrid): 
-                self.i0, val = multi_chebyshev_deriv(sigma, derivlist[j], self.sorted_domains[j], self.ordering, self.i0)
+                self.i0, val = multi_chebyshev(sigma, derivlist, self.sorted_domains, self.ordering, self.i0)
                 out[j] = val
         
         return out
@@ -778,7 +797,7 @@ class MultiGridChebyshev:
         self.dtype = self.coeffs.dtype
             
     def eval(self, sigma):
-        if isinstance(sigma, np.ndarray):
+        if isvec(sigma):
             # out = np.zeros((self.ngrid, len(sigma)), dtype = self.dtype)
             # for j in range(self.ngrid):
             #     out[j] = clenshaw_evaluation(self.coeffs[j], self.domain, sigma)
@@ -791,7 +810,7 @@ class MultiGridChebyshev:
         return out
         
     def deriv(self, sigma):
-        if isinstance(sigma, np.ndarray):
+        if isvec(sigma):
             # out = np.zeros((self.ngrid, len(sigma)), dtype = self.dtype)
             # for j in range(self.ngrid):
             #     out[j] = clenshaw_deriv_evaluation(self.coeffs[j], self.domain, sigma)
@@ -812,7 +831,7 @@ class MultiGridChebyshev:
         derivlist = chebdiff_jit(self.coeffs, n, self.domain_scale)
         derivlist = xp.ascontiguousarray(xp.moveaxis(derivlist, 0, -1))
         
-        if isinstance(sigma, np.ndarray):
+        if isvec(sigma):
             # out = np.zeros((self.ngrid, len(sigma)), dtype = self.dtype)
             # for j in range(self.ngrid):
             #     out[j] = clenshaw_evaluation(derivlist[j], self.domain, sigma)

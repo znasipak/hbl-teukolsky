@@ -3,31 +3,77 @@ import pickle
 import collocode
 from collocode import MultiGridMultiDomainChebyshev, MultiGridChebyshev
 import source
-from source import (TeukolskyPointParticleMode, 
-                    PointParticleMode, 
-                    teukolsky_starobinsky_complex_constant)
 
-class HertzPointParticleMode(PointParticleMode):
-    def __init__(self, mode, gauge = 'IRG'):
+from mode import TeukolskyPointParticleModeGridGenerator, TeukolskyPointParticleModeGenerator, PointParticleModeGrid
+from teuk import teukolsky_starobinsky_complex_constant
+from utils import chop_matrix
+from swsh import MultiModeSpinWeightedSpherical
+
+class HertzPointParticleModeGridGenerator(TeukolskyPointParticleModeGridGenerator):
+    def solve(self, s, lrange, gauge = 'IRG', reduce = False, **reduce_kwargs):
+        if (s != -2):
+            raise ValueError(f'Spin-weight {s} is not supported yet. Must be -2.')
+        if gauge != 'IRG':
+            raise ValueError(f'Gauge {gauge} is not supported yet. Must be IRG.')
         
-        if not (mode.s == -2):
-            raise ValueError(f'Spin-weight {mode.s} is not supported yet. Must be -2.')
+        Phi = PointParticleModeGrid(s, lrange, [0, 0], [0, 0], self.source)
+        Phi.basis = "spheroidal"
+
+        RslmGrid, domains, SslmGrid, amplitudes, eigenvalues = self.solve_teukolsky_mode_data(Phi, reduce = reduce, **reduce_kwargs)
+        domainsIn = domains["In"]
+        domainsUp = domains["Up"]
+
+        la_chandra = eigenvalues + Phi.s*(Phi.s+1)
+        ells = Phi.modes[:, 0]
+        emms = Phi.modes[:, 1]
+        teuk_starob_constant = teukolsky_starobinsky_complex_constant(ells, emms, Phi.source.a, Phi.frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*8./teuk_starob_constant
+        amplitudes["Up"] *= hertz_rescale
+        amplitudes["In"] *= hertz_rescale
+
+        RslmGrid["In"] = np.ascontiguousarray(amplitudes["In"][:, None, None]*RslmGrid["In"])
+        RslmGrid["Up"] = np.ascontiguousarray(amplitudes["Up"][:, None, None]*RslmGrid["Up"])
+        if len(RslmGrid["In"].shape) > 2:
+            RslmIn = MultiGridMultiDomainChebyshev(RslmGrid["In"], domainsIn)
+            RslmUp = MultiGridMultiDomainChebyshev(RslmGrid["Up"], domainsUp)
+        else:
+            RslmIn = MultiGridChebyshev(RslmGrid["In"], domainsIn)
+            RslmUp = MultiGridChebyshev(RslmGrid["Up"], domainsUp)
+
+        Phi.Rslm = {"In": RslmIn, "Up": RslmUp}
+        Phi.coupling = chop_matrix(SslmGrid, buffer = lrange[-1] - 2, tol=1e-50)
+        m_arr = Phi.m_mode_arr
+        coeffs_arr = Phi.group_by_m_modes(Phi.coupling)
+        gamma_arr = Phi.group_by_m_modes(Phi.source.a*Phi.frequencies)
+        Phi.Sslm = MultiModeSpinWeightedSpherical(s, m_arr, gamma_arr, coeffs_arr, tol = None)
+        Phi.eigenvalues = eigenvalues
+        Phi.amplitudes = amplitudes
+        Phi.domains["In"] = domainsIn
+        Phi.domains["Up"] = domainsUp
+
+        return Phi
+    
+    def hertz_from_weyl(self, psi, gauge = 'IRG'):
+        if (psi.s != -2):
+            raise ValueError(f'Spin-weight {psi.s} is not supported yet. Must be -2.')
+        if gauge != 'IRG':
+            raise ValueError(f'Gauge {gauge} is not supported yet. Must be IRG.')
         
-        self.gauge = gauge
-        super().__init__(mode.s, mode.l, mode.m, mode.k, mode.n, mode.source)
+        Phi = psi.copy()
+        la_chandra = Phi.eigenvalues + Phi.s*(Phi.s+1)
+        ells = Phi.modes[:, 0]
+        emms = Phi.modes[:, 1]
+        teuk_starob_constant = teukolsky_starobinsky_complex_constant(ells, emms, Phi.source.a, Phi.frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*8./teuk_starob_constant
+        Phi.amplitude["Up"] *= hertz_rescale
+        Phi.amplitude["In"] *= hertz_rescale
+        Phi.Rslm["Up"].coeffs *= hertz_rescale
+        Phi.Rslm["In"].coeffs *= hertz_rescale
 
-        self.Sslm = mode.Sslm
-        self.Rslm = mode.Rslm
+        return Phi
 
-        lambdaCH = self.Sslm.shifted_eigenvalue
-
-        self.amplitude = mode.amplitude
-        self.precision = mode.precision
-
-        plm = teukolsky_starobinsky_complex_constant(self.l, self.m, self.a, self.frequency, lambdaCH)
-        plmk = (plm.real + (-1.)**(self.k)*1j*plm.imag)
-        self.amplitude = (-1.)*(self.l + self.m + self.k)*8.*self.amplitude/plmk
-
+    def __call__(self, s, lrange, gauge = 'IRG', reduce = False, **reduce_kwargs):
+        return self.solve(s, lrange, gauge = gauge, reduce = reduce, **reduce_kwargs)
 
 # class ChebyshevModeGrid:
 #     def __init__(self, lmax, solver):
