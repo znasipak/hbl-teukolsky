@@ -2,7 +2,8 @@
 
 import numpy as np
 import numpy as xp
-from spheroidal import SpinWeightedSpheroidalHarmonic
+# from spheroidal import SpinWeightedSpheroidalHarmonic
+from swsh import SpinWeightedSpheroidalHarmonic
 from teuk import (sigma_r, 
                   sigma_r_deriv,
                   sigma_r_deriv_sigma, 
@@ -36,9 +37,13 @@ def gravitational_source_circular(l, m, geo, Sslm = None, Rslm = None, **kwargs)
     sth = np.sin(th)
     cth = np.cos(th)
 
-    Seq = Sslm(th, 0.)
-    dSeq = Sslm.deriv(th, 0.)
-    d2Seq = Sslm.deriv2(th, 0.)
+    # print(l, m)
+    Seq = Sslm.eval(th)
+    dSeq = Sslm.deriv(th)
+    d2Seq = Sslm.deriv2(th)
+    # Seq = Sslm(cth)
+    # dSeq = Sslm.deriv(cth)
+    # d2Seq = Sslm.deriv2(cth)
 
     L1 = -m/sth + a*omega*sth + cth/sth
     L2 = -m/sth + a*omega*sth + 2.*cth/sth
@@ -145,9 +150,9 @@ def gravitational_source_eccentric(l, m, n, geo, Sslm = None, Rslm = None, **kwa
     sth = np.sin(th)
     cth = np.cos(th)
 
-    Seq = Sslm(th, 0.)
-    dSeq = Sslm.deriv(th, 0.)
-    d2Seq = Sslm.deriv2(th, 0.)
+    Seq = Sslm.eval(th)
+    dSeq = Sslm.deriv(th)
+    d2Seq = Sslm.deriv2(th)
 
     L1 = -m/sth + a*omega*sth + cth/sth
     L2 = -m/sth + a*omega*sth + 2.*cth/sth

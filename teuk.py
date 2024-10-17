@@ -30,10 +30,10 @@ def u_hbl(sigma, kappa, s, lam, ma, omega):
     Ktilde = -((1 + s)*kappa + 1j*ma - 2j*(1 + kappa)*omega)/kappa
     return -2j*omega*(2.*kappa*Ktilde + (1 + 2.*s)*(1. + kappa)) + (1 - 4j*omega)*Ktilde*sigma - lam
 
-@nb.njit([nb.complex128[:,:](nb.float64[:], nb.float64, nb.int64, nb.float64, nb.float64, nb.float64), 
-          nb.complex128[:,:](nb.float64[:], nb.float64, nb.float64, nb.float64, nb.float64, nb.float64),
-          nb.complex128[:,:,:](nb.float64[:,:], nb.float64, nb.int64, nb.float64, nb.float64, nb.float64), 
-          nb.complex128[:,:,:](nb.float64[:,:], nb.float64, nb.float64, nb.float64, nb.float64, nb.float64)], cache=True)
+@nb.njit([nb.complex128[:,:](nb.float64[:], nb.float64, nb.int64, nb.complex128, nb.float64, nb.complex128), 
+          nb.complex128[:,:](nb.float64[:], nb.float64, nb.float64, nb.complex128, nb.float64, nb.complex128),
+          nb.complex128[:,:,:](nb.float64[:,:], nb.float64, nb.int64, nb.complex128, nb.float64, nb.complex128), 
+          nb.complex128[:,:,:](nb.float64[:,:], nb.float64, nb.float64, nb.complex128, nb.float64, nb.complex128)], cache=True)
 def teuk_sys(sigma, kappa, s, lam, ma, omega):
     Ktilde = -((1 + s)*kappa + 1j*ma - 2j*(1 + kappa)*omega)/kappa
     P = sigma**2*(1 - sigma)
@@ -532,7 +532,12 @@ class HyperboloidalTeukolskySolution(ScaledTeukolskyModeHyperboloidalSlicingRadi
         else:
             return ValueError("Only supports up to second-derivatives")
 
-    def __call__(self, sigma, deriv = 0, slicing = "hyperboloidal", scaled = True, compactification = True):
+    def __call__(self, x, deriv = 0, slicing = "hyperboloidal", scaled = True, compactification = True):
+        if compactification is False:
+            sigma = self.sigma_r(x)
+        else:
+            sigma = x
+
         if slicing == "hyperboloidal" or slicing == "hbl":
             if scaled:
                 return self.eval(sigma, deriv = deriv)
@@ -550,7 +555,7 @@ class HyperboloidalTeukolsky(ScaledTeukolskyModeHyperboloidalSlicingRadialCompac
     def __init__(self, a, s, l, m, omega, eigenvalue = None, psi = {"In": None, "Up": None}):
         ScaledTeukolskyModeHyperboloidalSlicingRadialCompactification.__init__(self, a, s, l, m, omega, eigenvalue)
         if eigenvalue is None:
-            self.eigenvalue = swsh.swsh_eigenvalue(s, l, m, a*omega)
+            self.eigen = swsh.swsh_eigenvalue(s, l, m, a*omega)
         self.horizon = 1 + self.kappa
         self.psi = {"In": HyperboloidalTeukolskySolution(a, s, l, m, omega, eigenvalue, psi["In"]), "Up": HyperboloidalTeukolskySolution(a, s, l, m, omega, eigenvalue, psi["Up"])}
 
@@ -635,3 +640,64 @@ def ScaledStaticTeukolskyHyperboloidalSlicingRadialCompactification(a, s, l):
         return ScaledStaticPlusTeukolskyHyperboloidalSlicingRadialCompactification(a, s, l)
     else:
         return ScaledStaticMinusTeukolskyHyperboloidalSlicingRadialCompactification(a, s, l)
+
+def fTS_plus_to_minus_2(sigma, kappa, lam, ma, omega):
+    return kappa**(-7)*omega**(-4)*(-1+sigma)**(-3)*(1/256)*(256*kappa**(7)*omega**(4)*(-1+sigma)**(3)+32*sigma*kappa**(6)*omega**(3)*(-1+sigma)**(2)*(-8+5*sigma)*(4*omega+(1j))+sigma**(7)*(ma-2*omega)**(3)*(4*omega+(1j))+kappa**(2)*sigma**(5)*(ma-2*omega)*(4*omega+(1j))*(8+lam*(-4+3*sigma)+96*omega**(2)+sigma**(2)*(1+12*omega**(2))-6*sigma*(1+14*omega**(2)+omega*(-3*ma+(1j)))+4*omega*(-6*ma+(3j)))+4*omega*kappa**(4)*sigma**(3)*(4*omega+(1j))*(2*lam*(3-5*sigma+2*sigma**(2))+omega*sigma**(3)*(14*omega+(1j))+10*sigma*(2-6*ma*omega+24*omega**(2)+omega*(3j))-4*sigma**(2)*(2-6*ma*omega+30*omega**(2)+omega*(3j))-4*(3-9*ma*omega+34*omega**(2)+omega*(5j)))+kappa*sigma**(6)*(ma-2*omega)**(2)*(-2+lam+4*ma*omega+8*omega**(2)*(-7+3*sigma)+omega*(6j)*(-3+sigma))+12*kappa**(5)*omega**(2)*sigma**(2)*(-1+sigma)*(4*lam*(-1+sigma)+8*(1-2*ma*omega+20*omega**(2)+omega*(7j))-8*sigma*(1-2*ma*omega+24*omega**(2)+omega*(8j))+sigma**(2)*(-1+48*omega**(2)+omega*(16j)))+kappa**(3)*sigma**(4)*(lam**(2)*(-1+sigma)+2*lam*(1+40*omega**(2)+sigma*(-1-48*omega**(2)+4*omega*(2*ma+(-3j)))+omega*sigma**(2)*(10*omega+(3j))+omega*(-8*ma+(10j)))+2*omega*(24*omega*ma**(2)*(-1+sigma)+sigma**(3)*(4*omega+16*omega**(3)+(1j)+omega**(2)*(4j))-6*sigma**(2)*(2*omega+56*omega**(3)+(1j)+omega**(2)*(18j))+6*sigma*(7*omega+176*omega**(3)+(2j)+omega**(2)*(64j))+ma*(sigma**(2)*(-1+120*omega**(2)+omega*(36j))+2*(5+192*omega**(2)+omega*(60j))-2*sigma*(5+240*omega**(2)+omega*(72j)))-2*(17*omega+400*omega**(3)+(5j)+omega**(2)*(160j)))))
+
+def gTS_plus_to_minus_2(sigma, kappa, lam, ma, omega):
+    return kappa**(-7)*omega**(-4)*(-1+sigma)**(-3)*(1j)/(256)*(ma*sigma**(4)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+6*omega*ma**(2)*sigma**(6)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-1*sigma**(2))+2*omega*sigma**(2)*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-1*kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6))+ma**(3)*sigma**(8))
+
+def fTS_minus_to_plus_2(sigma, kappa, lam, ma, omega):
+    return kappa**(-3)*sigma**(-6)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(1j))**(-1)*(2+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(-1*ma+2*(1+kappa)*omega)**(-1)*(-1j)*(sigma**(6)*(ma-2*omega)**(4)-32*kappa**(7)*omega**(3)*(-1+sigma)**(3)*(4*omega+(1j))+kappa*sigma**(5)*(ma-2*omega)**(3)*(-3+sigma)*(4*omega+(1j))-4*kappa**(6)*omega**(2)*(-1+sigma)**(2)*(-4*lam*(-1+sigma)-8*sigma*(-1+2*ma*omega+8*omega**(2))+sigma**(2)*(3+48*omega**(2))-8*(1-2*ma*omega+4*omega**(2)+omega*(3j)))-4*omega*sigma*kappa**(5)*(-1+sigma)*(4*omega+(1j))*(2*lam*(-1+sigma)+2*sigma*(-2+6*ma*omega+omega*(-9j))+3*omega*sigma**(3)*(2*omega+(-1j))+12*omega*sigma**(2)*(-2*omega+(1j))+4*(1-3*ma*omega+6*omega**(2)+omega*(3j)))+kappa**(3)*sigma**(3)*(ma-2*omega)*(4*omega+(1j))*(lam*(4-5*sigma+sigma**(2))-1*sigma**(3)*(-2*omega+(1j))**(2)+sigma**(2)*(-5+6*omega*(ma+(-3j)))+10*sigma*(1+6*omega**(2)-3*omega*(ma+(-1j)))-4*(2+16*omega**(2)+omega*(-6*ma+(5j))))+kappa**(2)*sigma**(4)*(ma-2*omega)**(2)*(6+3*lam*(-1+sigma)+72*omega**(2)-6*sigma*(1+8*omega**(2)-2*omega*(ma+(-2j)))+6*omega*(-2*ma+(5j))+sigma**(2)*(1+omega*(6j)))+kappa**(4)*sigma**(2)*(lam**(2)*(-1+sigma)**(2)-2*lam*(-1+sigma)*(-1+sigma-24*omega**(2)+16*sigma*omega**(2)+omega*(8*ma+(-6j))+omega*sigma**(2)*(2*omega+(-1j))+omega*sigma*(-8*ma+(4j)))-2*omega*(-24*omega*ma**(2)*(-1+sigma)**(2)+2*sigma**(2)*(omega+24*omega**(3)+omega**(2)*(-90j)+(-5j))+sigma**(4)*(-2*omega+(1j))**(2)*(2*omega+(1j))-6*(3*omega+48*omega**(3)+(1j)+omega**(2)*(32j))+ma*(-1+sigma)*(3*sigma**(2)*(1+8*omega**(2)+omega*(-4j))+2*sigma*(5+48*omega**(2)+omega*(24j))-2*(5+96*omega**(2)+omega*(36j)))+sigma**(3)*(-16*omega-96*omega**(3)+(5j)+omega**(2)*(48j))+2*sigma*(14*omega+160*omega**(3)+(5j)+omega**(2)*(160j)))))
+
+def gTS_minus_to_plus_2(sigma, kappa, lam, ma, omega):
+    return -1*kappa**(-2)*sigma**(-6)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(1j))**(-1)*(2+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(-1*ma+2*(1+kappa)*omega)**(-1)*(-1+sigma)*(6*omega*ma**(2)*sigma**(4)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-1*sigma**(2))+ma*sigma**(2)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+ma**(3)*sigma**(6)+2*omega*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-1*kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6)))
+
+def hbl_teukolsky_starobinsky_system_plus_to_minus_2(sigma, kappa, lam, ma, omega):
+    """
+    Outputs the transformation functions $f_{TS}$ and $g_{TS}$ for the Teukolsky-Starobinsky transformation:
+
+    $\Psi_{-2}(\sigma) = f_{TS}(\sigma) \Psi_{+2}(\sigma) + g_{TS}(\sigma) \Psi_{+2}'(\sigma),$
+
+    where $\Psi_{s}$ is the rescaled Teukolsky solution on a hyperboloidal slice and $\sigma$ is the
+    compactified radial coordinate.
+    """
+
+    fTS = kappa**(-7)*(-1+sigma)**(-3)*(1/16)*(256*kappa**(7)*omega**(4)*(-1+sigma)**(3)+32*sigma*kappa**(6)*omega**(3)*(-1+sigma)**(2)*(-8+5*sigma)*(4*omega+(1j))+sigma**(7)*(ma-2*omega)**(3)*(4*omega+(1j))+kappa**(2)*sigma**(5)*(ma-2*omega)*(4*omega+(1j))*(8-6*sigma+lam*(-4+3*sigma)+12*omega**(2)*(8+sigma*(-7+sigma))+sigma**(2)+6*omega*(ma*(-4+3*sigma)+(-1j)*(-2+sigma)))+4*omega*kappa**(4)*sigma**(3)*(4*omega+(1j))*(2*(-3+2*sigma)*(-2+lam)*(-1+sigma)+2*omega**(2)*(-68+sigma*(120+sigma*(-60+7*sigma)))+omega*(12*ma*(-3+2*sigma)*(-1+sigma)+(1j)*(-2+sigma)*(10+sigma*(-10+sigma))))+kappa*sigma**(6)*(ma-2*omega)**(2)*(-2+lam+4*ma*omega+8*omega**(2)*(-7+3*sigma)+omega*(6j)*(-3+sigma))+kappa**(3)*sigma**(4)*(lam*(-2+lam)*(-1+sigma)+32*omega**(4)*(-50+sigma*(66+sigma*(-21+sigma)))+8*omega**(3)*(6*ma*(16+5*sigma*(-4+sigma))+(1j)*(-80+sigma*(96+sigma*(-27+sigma))))+2*omega*(ma*(10+8*lam*(-1+sigma)-sigma*(10+sigma))+(1j)*(-10+sigma*(12+sigma*(-6+sigma))+lam*(10+3*sigma*(-4+sigma))))+4*omega**(2)*((-1+sigma)*(17+2*sigma*(-2+sigma))+lam*(20+sigma*(-24+5*sigma))+12*ma**(2)*(-1+sigma)+ma*(6j)*(10+3*sigma*(-4+sigma))))+12*kappa**(5)*omega**(2)*sigma**(2)*(-1+sigma)*(8+4*lam*(-1+sigma)-8*sigma+16*omega**(2)*(10+3*sigma*(-4+sigma))-sigma**(2)+8*omega*(2*ma*(-1+sigma)+sigma*(2j)*(-4+sigma)+(7j))))
+    gTS = kappa**(-7)*sigma**(2)*(-1+sigma)**(-3)*(1j)/(16)*(2*omega*kappa**(2)*sigma**(2)*(kappa*sigma*(-2+sigma)*(2+2*lam*(-1+sigma)+sigma*(-2+sigma))+4*kappa**(2)*(-1+sigma)**(2)*(-2+lam)-sigma**(2)*(2*lam*(-1+sigma)+(-2+sigma)**(2)))+ma*kappa**(2)*sigma**(4)*(2*lam*(-1+sigma)+(-2+sigma)**(2))+6*omega*ma**(2)*sigma**(4)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-sigma**(2))+ma**(3)*sigma**(6)+12*ma*omega**(2)*sigma**(2)*(2*kappa**(2)*(-1+sigma)+kappa*sigma*(-2+sigma)-sigma**(2))**(2)+8*omega**(3)*(2*kappa**(2)*(-1+sigma)+kappa*sigma*(-2+sigma)-sigma**(2))**(3))
+    return fTS, gTS
+
+def hbl_teukolsky_starobinsky_system_minus_to_plus_2(sigma, kappa, lam, ma, omega):
+    """
+    Outputs the transformation functions $f_{TS}$ and $g_{TS}$ for the Teukolsky-Starobinsky transformation:
+
+    $\Psi_{+2}(\sigma) = f_{TS}(\sigma) \Psi_{-2}(\sigma) + g_{TS}(\sigma) \Psi_{-2}'(\sigma),$
+
+    where $\Psi_{s}$ is the rescaled Teukolsky solution on a hyperboloidal slice and $\sigma$ is the
+    compactified radial coordinate.
+    """
+
+    fTS = kappa**(-3)*sigma**(-6)*(1+kappa**(-1)*(-1j)*(-ma+2*omega*(1+kappa)))**(-1)*(1+kappa**(-1)*(1j)*(-ma+2*omega*(1+kappa)))**(-1)*(2+kappa**(-1)*(-1j)*(-ma+2*omega*(1+kappa)))**(-1)*(-ma+2*omega*(1+kappa))**(-1)*(-1j)*(sigma**(6)*(ma-2*omega)**(4)-32*kappa**(7)*omega**(3)*(-1+sigma)**(3)*(4*omega+(1j))+kappa*sigma**(5)*(ma-2*omega)**(3)*(-3+sigma)*(4*omega+(1j))-4*kappa**(6)*omega**(2)*(-1+sigma)**(2)*(-4*lam*(-1+sigma)-8*sigma*(-1+2*ma*omega+8*omega**(2))+sigma**(2)*(3+48*omega**(2))-8*(1-2*ma*omega+4*omega**(2)+omega*(3j)))-4*omega*sigma*kappa**(5)*(-1+sigma)*(4*omega+(1j))*(2*lam*(-1+sigma)+2*sigma*(-2+6*ma*omega+omega*(-9j))+3*omega*sigma**(3)*(2*omega+(-1j))+12*omega*sigma**(2)*(-2*omega+(1j))+4*(1-3*ma*omega+6*omega**(2)+omega*(3j)))+kappa**(3)*sigma**(3)*(ma-2*omega)*(4*omega+(1j))*(lam*(4-5*sigma+sigma**(2))-sigma**(3)*(-2*omega+(1j))**(2)+sigma**(2)*(-5+6*omega*(ma+(-3j)))+10*sigma*(1+6*omega**(2)-3*omega*(ma+(-1j)))-4*(2+16*omega**(2)+omega*(-6*ma+(5j))))+kappa**(2)*sigma**(4)*(ma-2*omega)**(2)*(6+3*lam*(-1+sigma)+72*omega**(2)-6*sigma*(1+8*omega**(2)-2*omega*(ma+(-2j)))+6*omega*(-2*ma+(5j))+sigma**(2)*(1+omega*(6j)))+kappa**(4)*sigma**(2)*(lam**(2)*(-1+sigma)**(2)-2*lam*(-1+sigma)*(-1+sigma-24*omega**(2)+16*sigma*omega**(2)+omega*(8*ma+(-6j))+omega*sigma**(2)*(2*omega+(-1j))+omega*sigma*(-8*ma+(4j)))-2*omega*(-24*omega*ma**(2)*(-1+sigma)**(2)+2*sigma**(2)*(omega+24*omega**(3)+omega**(2)*(-90j)+(-5j))+sigma**(4)*(-2*omega+(1j))**(2)*(2*omega+(1j))-6*(3*omega+48*omega**(3)+(1j)+omega**(2)*(32j))+ma*(-1+sigma)*(3*sigma**(2)*(1+8*omega**(2)+omega*(-4j))+2*sigma*(5+48*omega**(2)+omega*(24j))-2*(5+96*omega**(2)+omega*(36j)))+sigma**(3)*(-16*omega-96*omega**(3)+(5j)+omega**(2)*(48j))+2*sigma*(14*omega+160*omega**(3)+(5j)+omega**(2)*(160j)))))
+    gTS = -kappa**(-2)*sigma**(-6)*(1+kappa**(-1)*(-1j)*(-ma+2*omega*(1+kappa)))**(-1)*(1+kappa**(-1)*(1j)*(-ma+2*omega*(1+kappa)))**(-1)*(2+kappa**(-1)*(-1j)*(-ma+2*omega*(1+kappa)))**(-1)*(-ma+2*omega*(1+kappa))**(-1)*(-1+sigma)*(6*omega*ma**(2)*sigma**(4)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-sigma**(2))+ma*sigma**(2)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+ma**(3)*sigma**(6)+2*omega*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6)))
+    return fTS, gTS
+
+from collocode import CollocationTransformation
+
+def teukolsky_starobinsky_check_minus_2(Phi):
+    s = -2
+    a = Phi.a
+    l = Phi.l
+    m = Phi.m
+    kappa = Phi.kappa
+    omega = Phi.omega
+    eigen = Phi.eigen + s*(s+1)
+
+    solver = CollocationTransformation(n=Phi.coeffs.shape[0])
+    
+    Phi2 = solver(hbl_teukolsky_starobinsky_system_minus_to_plus_2, Phi.coeffs, args = (kappa, eigen, m*a, omega), domain = Phi.domain)
+    Phi3 = solver(hbl_teukolsky_starobinsky_system_plus_to_minus_2, Phi2.coeffs, args = (kappa, eigen, m*a, omega), domain = Phi2.domain)
+
+    return Phi3
+
+
+

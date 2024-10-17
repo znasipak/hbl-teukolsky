@@ -294,7 +294,7 @@ class CollocationTransformation:
         else:
             raise ValueError(f"Too many collocation points requested. Maximum number of collocation points is set to {_CHEBY_dsize}.")
 
-    def transform_coeffs(self, transform_sys, coeffs, args = (), domain = [-1, 1]):
+    def solve_transform_coeffs(self, transform_sys, coeffs, args = (), domain = [-1, 1]):
         [zmin, zmax] = domain
     
         z_nodes = z_of_x(self.nodes, zmin, zmax)

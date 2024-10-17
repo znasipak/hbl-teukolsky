@@ -328,41 +328,68 @@ class SpinWeightedSpheroidalHarmonic(SWSHSeriesBase):
     def __init__(self, s, l, m, g):
         SWSHSeriesBase.__init__(self, s, l, m, g)
         if self.spheroidicity == 0.:
-            self.eval = self.Yslm
-            self.deriv = self.Yslm_derivative
+            # self.eval = self.Yslm
+            # self.deriv = self.Yslm_derivative
             self.eigenvalue = Yslm_eigenvalue(self.s, self.l)
-            self.coeffs = np.zeros(np.max([self.l - self.lmin, 1]))
+            self.coeffs = np.zeros(np.max([self.l - self.lmin + 1, 1]))
             self.coeffs[-1] = 1.
         else:
-            self.eval = self.Sslm
-            self.deriv = self.Sslm_derivative
+            # self.eval = self.Sslm
+            # self.deriv = self.Sslm_derivative
             self.eigenvalue, self.coeffs = self.generate_eigs()
+        self.coefficients = self.coeffs
             
-    def Yslm(self, l, th):
-        return Yslm(self.s, l, self.m, th)
-
-    def Yslm_derivative(self, l, th):
-        return YslmDerivative(self.s, l, self.m, th)
+    def Yslm(self, l, z):
+        return sphericalY_expansion(self.s, l, self.m, z)
     
-    def Sslm(self, *args):
-        th = args[-1]
+    def Yslm_derivative(self, l, z):
+        return sphericalY_expansion_deriv(self.s, l, self.m, z)
+    
+    # def Sslm(self, *args):
+    #     th = args[-1]
+    #     term_num = self.coeffs.shape[0]
+    #     pts_num = th.shape[0]
+    #     Yslm_array = np.empty((term_num, pts_num))
+    #     z = np.cos(th)
+    #     for i in range(term_num):
+    #         Yslm_array[i] = self.Yslm(self.lmin + i, z)
+            
+    #     return np.dot(self.coeffs, Yslm_array)
+
+    # def Sslm_derivative(self, *args):
+    #     th = args[-1]
+    #     term_num = self.coeffs.shape[0]
+    #     pts_num = th.shape[0]
+    #     Yslm_array = np.empty((term_num, pts_num))
+    #     z = np.cos(th)
+    #     for i in range(term_num):
+    #         Yslm_array[i] = self.Yslm_derivative(self.lmin + i, z)
+            
+    #     return np.dot(self.coeffs, Yslm_array)
+
+    def Sslm(self, z):
         term_num = self.coeffs.shape[0]
-        pts_num = th.shape[0]
-        Yslm_array = np.empty((term_num, pts_num))
+        Yslm_array = np.empty((term_num))
         for i in range(term_num):
-            Yslm_array[i] = self.Yslm(self.lmin + i, th)
+            Yslm_array[i] = self.Yslm(self.lmin + i, z)
             
         return np.dot(self.coeffs, Yslm_array)
 
-    def Sslm_derivative(self, *args):
-        th = args[-1]
+    def Sslm_derivative(self, z):
         term_num = self.coeffs.shape[0]
-        pts_num = th.shape[0]
-        Yslm_array = np.empty((term_num, pts_num))
+        Yslm_array = np.empty((term_num))
         for i in range(term_num):
-            Yslm_array[i] = self.Yslm_derivative(self.lmin + i, th)
+            Yslm_array[i] = self.Yslm_derivative(self.lmin + i, z)
             
         return np.dot(self.coeffs, Yslm_array)
+    
+    def eval(self, th):
+        z = np.cos(th)
+        return self.Sslm(z)
+    
+    def deriv(self, th):
+        z = np.cos(th)
+        return self.Sslm_derivative(z)
             
     def deriv2(self, th):
         S = self.eval(th)
@@ -373,7 +400,7 @@ class SpinWeightedSpheroidalHarmonic(SWSHSeriesBase):
         return -f*dS - g*S
     
     def __call__(self, th):
-        return self.eval(self.l, th)
+        return self.eval(th)
 
 def muCoupling(s, l):
     """
@@ -441,6 +468,9 @@ def sphericalY_expansion_deriv(s, l, m, z):
 
     for i in range(lmin, lmax + 1):
         yslm += dAsljm(s, l, i, m)*Ylm(i, m, z)
+
+    # if np.isnan(np.sqrt(1. - z**2)**(-np.abs(s) - 1)):
+    #     print(z, s, l, m)
 
     return - yslm * np.sqrt(1. - z**2)**(-np.abs(s) - 1)
 

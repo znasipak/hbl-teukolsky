@@ -473,16 +473,16 @@ Methods
 """
 
 class TeukolskySolver:
-    def __init__(self, a, s, l, m, omega, lam=None):
+    def __init__(self, a, s, l, m, omega, eigenvalue=None):
         self.a = a
         self.s = s
         self.l = l
         self.m = m
         self.frequency = omega
-        if lam is None:
+        if eigenvalue is None:
             self.eigenvalue = eigenvalue(self.s, self.l, self.m, self.a*self.frequency)
         else:
-            self.eigenvalue = lam
+            self.eigenvalue = eigenvalue
         
         self.kappa = xp.sqrt(1. - a**2)
         self.horizon = 1. + self.kappa
@@ -571,7 +571,6 @@ class TeukolskySolver:
     def fTS_minus_to_plus_2(sigma, kappa, lam, ma, omega):
         return kappa**(-3)*sigma**(-6)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(1j))**(-1)*(2+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(-1*ma+2*(1+kappa)*omega)**(-1)*(-1j)*(sigma**(6)*(ma-2*omega)**(4)-32*kappa**(7)*omega**(3)*(-1+sigma)**(3)*(4*omega+(1j))+kappa*sigma**(5)*(ma-2*omega)**(3)*(-3+sigma)*(4*omega+(1j))-4*kappa**(6)*omega**(2)*(-1+sigma)**(2)*(-4*lam*(-1+sigma)-8*sigma*(-1+2*ma*omega+8*omega**(2))+sigma**(2)*(3+48*omega**(2))-8*(1-2*ma*omega+4*omega**(2)+omega*(3j)))-4*omega*sigma*kappa**(5)*(-1+sigma)*(4*omega+(1j))*(2*lam*(-1+sigma)+2*sigma*(-2+6*ma*omega+omega*(-9j))+3*omega*sigma**(3)*(2*omega+(-1j))+12*omega*sigma**(2)*(-2*omega+(1j))+4*(1-3*ma*omega+6*omega**(2)+omega*(3j)))+kappa**(3)*sigma**(3)*(ma-2*omega)*(4*omega+(1j))*(lam*(4-5*sigma+sigma**(2))-1*sigma**(3)*(-2*omega+(1j))**(2)+sigma**(2)*(-5+6*omega*(ma+(-3j)))+10*sigma*(1+6*omega**(2)-3*omega*(ma+(-1j)))-4*(2+16*omega**(2)+omega*(-6*ma+(5j))))+kappa**(2)*sigma**(4)*(ma-2*omega)**(2)*(6+3*lam*(-1+sigma)+72*omega**(2)-6*sigma*(1+8*omega**(2)-2*omega*(ma+(-2j)))+6*omega*(-2*ma+(5j))+sigma**(2)*(1+omega*(6j)))+kappa**(4)*sigma**(2)*(lam**(2)*(-1+sigma)**(2)-2*lam*(-1+sigma)*(-1+sigma-24*omega**(2)+16*sigma*omega**(2)+omega*(8*ma+(-6j))+omega*sigma**(2)*(2*omega+(-1j))+omega*sigma*(-8*ma+(4j)))-2*omega*(-24*omega*ma**(2)*(-1+sigma)**(2)+2*sigma**(2)*(omega+24*omega**(3)+omega**(2)*(-90j)+(-5j))+sigma**(4)*(-2*omega+(1j))**(2)*(2*omega+(1j))-6*(3*omega+48*omega**(3)+(1j)+omega**(2)*(32j))+ma*(-1+sigma)*(3*sigma**(2)*(1+8*omega**(2)+omega*(-4j))+2*sigma*(5+48*omega**(2)+omega*(24j))-2*(5+96*omega**(2)+omega*(36j)))+sigma**(3)*(-16*omega-96*omega**(3)+(5j)+omega**(2)*(48j))+2*sigma*(14*omega+160*omega**(3)+(5j)+omega**(2)*(160j)))))
     
-    
     @staticmethod
     def gTS_minus_to_plus_2(sigma, kappa, lam, ma, omega):
         return -1*kappa**(-2)*sigma**(-6)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(1j))**(-1)*(2+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(-1*ma+2*(1+kappa)*omega)**(-1)*(-1+sigma)*(6*omega*ma**(2)*sigma**(4)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-1*sigma**(2))+ma*sigma**(2)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+ma**(3)*sigma**(6)+2*omega*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-1*kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6)))
@@ -656,7 +655,7 @@ class TeukolskySolver:
         return -4.*self.kappa/sigma**3 + 2./sigma**2 + (1. + self.kappa)/self.kappa/(1. - sigma)**2       
     
     def __flip_spin_coeffs(self, clist, dlist):
-        s = -abs(self.s)
+        s = -abs(self.s) #huh?
         # la = self.shifted_eigenvalue - s*(s+1)
         la = self.shifted_eigenvalue
         domain_num, n = clist.shape

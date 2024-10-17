@@ -8,7 +8,7 @@ from collocode import (CollocationODEFixedStepSolver,
                        CollocationODEFixedMultiDomainFixedStepSolver,
                        CollocationODEMultiDomainFixedStepSolver)
 from source import integrate_source
-from spheroidal import SpinWeightedSpheroidalHarmonic
+from swsh import SpinWeightedSpheroidalHarmonic
 from swsh import MultiModeSpinWeightedSpherical
 from teuk import (sigma_r, 
                   sigma_r_deriv,
@@ -76,7 +76,7 @@ class PointParticleMode:
         return self.Rslm.Z_sigma(sigma)*self.Rslm.psi[bc](sigma, deriv = 2) + 2.*self.Rslm.Z_sigma_deriv(sigma)*self.Rslm.psi[bc](sigma, deriv = 1) + self.Rslm.Z_sigma_deriv2(sigma)*self.Rslm.psi[bc](sigma)
     
     def radialsolution(self, bc, sigma):
-        return self.amplitudes[bc]*self.radialsolution(bc, sigma)
+        return self.amplitudes[bc]*self.homogeneousradialsolution(bc, sigma)
     
     def homogeneousradialsolution(self, bc, sigma):
         return self.Rslm.psi[bc](sigma)
@@ -226,7 +226,6 @@ class TeukolskyPointParticleModeGenerator:
 
         teuk.Sslm = SpinWeightedSpheroidalHarmonic(s, l, m, teuk.a*teuk.frequency)
         teuk.Rslm = teuk_solver(teuk.a, s, l, m, teuk.frequency, teuk.eigenvalue, rescale = rescale, reduce = reduce, **reduce_kwargs)
-
         amplitude_data = integrate_source(s, l, m, k, n, self.source, Sslm = teuk.Sslm, Rslm = teuk.Rslm, **integrate_kwargs)
         teuk.amplitudes["In"], teuk.amplitudes["Up"] = amplitude_data[0]
         teuk.precisions["In"], teuk.precisions["Up"] = amplitude_data[1]
