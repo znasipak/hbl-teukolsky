@@ -1,20 +1,40 @@
 # teuk.py
 import numpy as np
 import numpy as xp # This is leaving open the introduction of GPUs in the future
-import collocode
-import swsh
-
+from . import collocode
+from . import swsh
 import numba as nb
 
 # Real part of the Teukolsky-Starobinsky constant given in terms of (a, m, omega) 
 # and Chandrasekhar's spin-invariant eigenvalue lambdaCH = lambda_s + s(s+1) for s = pm 2
+def teukolsky_starobinsky_constant_D_squared(m, a, omega, lambdaCH):
+	return (pow(lambdaCH, 2) + 4*m*a*omega - pow(2*a*omega, 2))*(pow(lambdaCH - 2., 2) + 36.*m*a*omega - pow(6.*a*omega, 2)) + (2.*lambdaCH - 1.)*(96.*pow(a*omega, 2) - 48.*m*a*omega) - pow(12.*a*omega, 2)
+
 def teukolsky_starobinsky_constant_D(m, a, omega, lambdaCH):
-	return np.sqrt((pow(lambdaCH, 2) + 4*m*a*omega - pow(2*a*omega, 2))*(pow(lambdaCH - 2., 2) + 36.*m*a*omega - pow(6.*a*omega, 2)) + (2.*lambdaCH - 1.)*(96.*pow(a*omega, 2) - 48.*m*a*omega) - pow(12.*a*omega, 2))
+	return np.sqrt(teukolsky_starobinsky_constant_D_squared(m, a, omega, lambdaCH))
 
 # Complex Teukolsky-Starobinsky constant given in terms of (a, m, omega) 
 # and Chandrasekhar's spin-invariant eigenvalue lambdaCH = lambda_s + s(s+1) for s = pm 2
 def teukolsky_starobinsky_complex_constant(j, m, a, omega, lambdaCH):
 	return teukolsky_starobinsky_constant_D(m, a, omega, lambdaCH) + pow(-1., j + m)*12.*1j*omega
+
+def teukolsky_starobinsky_alpha_minus_p2(m, a, omega, lambdaCH):
+    if omega == 0:
+        return 1.
+    kappa = np.sqrt(1 - a**2)
+    w = (2*omega*(1 + kappa) - m*a)/(kappa)
+    return 16*kappa**4*(1j*w + 1)*(1j*w)*(1j*w - 1)*(1j*w - 2)
+
+def teukolsky_starobinsky_alpha_minus_m2(m, a, omega, lambdaCH):
+    return teukolsky_starobinsky_constant_D_squared(m, a, omega, lambdaCH)/teukolsky_starobinsky_alpha_minus_p2(m, a, omega, lambdaCH)
+
+def teukolsky_starobinsky_alpha_plus_m2(m, a, omega, lambdaCH):
+    if omega == 0:
+        return lambdaCH*(lambdaCH - 2.)
+    return 16*omega**4
+
+def teukolsky_starobinsky_alpha_plus_p2(m, a, omega, lambdaCH):
+    return teukolsky_starobinsky_constant_D_squared(m, a, omega, lambdaCH)/teukolsky_starobinsky_alpha_plus_m2(m, a, omega, lambdaCH)
 
 @nb.njit
 def p_hbl(sigma):
@@ -542,7 +562,7 @@ class HyperboloidalTeukolskySolution(ScaledTeukolskyModeHyperboloidalSlicingRadi
             if scaled:
                 return self.eval(sigma, deriv = deriv)
             else:
-                return self.eval_with_rescaling(sigma, deriv = deriv)
+                return self.eval_with_rescaling(sigma, deriv)
         elif slicing == "time" or slicing == "t":
             if scaled:
                 return self.eval_slicing(sigma, deriv = deriv)
@@ -654,7 +674,7 @@ def gTS_minus_to_plus_2(sigma, kappa, lam, ma, omega):
     return -1*kappa**(-2)*sigma**(-6)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(1+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(1j))**(-1)*(2+kappa**(-1)*(-1*ma+2*(1+kappa)*omega)*(-1j))**(-1)*(-1*ma+2*(1+kappa)*omega)**(-1)*(-1+sigma)*(6*omega*ma**(2)*sigma**(4)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-1*sigma**(2))+ma*sigma**(2)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+ma**(3)*sigma**(6)+2*omega*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-1*kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6)))
 
 def hbl_teukolsky_starobinsky_system_plus_to_minus_2(sigma, kappa, lam, ma, omega):
-    """
+    r"""
     Outputs the transformation functions $f_{TS}$ and $g_{TS}$ for the Teukolsky-Starobinsky transformation:
 
     $\Psi_{-2}(\sigma) = f_{TS}(\sigma) \Psi_{+2}(\sigma) + g_{TS}(\sigma) \Psi_{+2}'(\sigma),$
@@ -668,7 +688,7 @@ def hbl_teukolsky_starobinsky_system_plus_to_minus_2(sigma, kappa, lam, ma, omeg
     return fTS, gTS
 
 def hbl_teukolsky_starobinsky_system_minus_to_plus_2(sigma, kappa, lam, ma, omega):
-    """
+    r"""
     Outputs the transformation functions $f_{TS}$ and $g_{TS}$ for the Teukolsky-Starobinsky transformation:
 
     $\Psi_{+2}(\sigma) = f_{TS}(\sigma) \Psi_{-2}(\sigma) + g_{TS}(\sigma) \Psi_{-2}'(\sigma),$
@@ -681,7 +701,7 @@ def hbl_teukolsky_starobinsky_system_minus_to_plus_2(sigma, kappa, lam, ma, omeg
     gTS = -kappa**(-2)*sigma**(-6)*(1+kappa**(-1)*(-1j)*(-ma+2*omega*(1+kappa)))**(-1)*(1+kappa**(-1)*(1j)*(-ma+2*omega*(1+kappa)))**(-1)*(2+kappa**(-1)*(-1j)*(-ma+2*omega*(1+kappa)))**(-1)*(-ma+2*omega*(1+kappa))**(-1)*(-1+sigma)*(6*omega*ma**(2)*sigma**(4)*(kappa*sigma*(-2+sigma)+2*kappa**(2)*(-1+sigma)-sigma**(2))+ma*sigma**(2)*(48*kappa**(4)*omega**(2)*(-1+sigma)**(2)+48*sigma*kappa**(3)*omega**(2)*(2-3*sigma+sigma**(2))+kappa**(2)*sigma**(2)*(4+2*lam*(-1+sigma)-4*sigma+96*omega**(2)-96*sigma*omega**(2)+sigma**(2)+12*omega**(2)*sigma**(2))-24*kappa*omega**(2)*sigma**(3)*(-2+sigma)+12*omega**(2)*sigma**(4))+ma**(3)*sigma**(6)+2*omega*(48*sigma*kappa**(5)*omega**(2)*(-1+sigma)**(2)*(-2+sigma)+32*kappa**(6)*omega**(2)*(-1+sigma)**(3)+4*kappa**(4)*sigma**(2)*(-1+sigma)*(2+lam*(-1+sigma)+36*omega**(2)-2*sigma*(1+18*omega**(2))+6*omega**(2)*sigma**(2))+kappa**(3)*sigma**(3)*(-2+sigma)*(2+2*lam*(-1+sigma)+64*omega**(2)-2*sigma*(1+32*omega**(2))+sigma**(2)*(1+4*omega**(2)))-kappa**(2)*sigma**(4)*(4+2*lam*(-1+sigma)+72*omega**(2)-4*sigma*(1+18*omega**(2))+sigma**(2)*(1+12*omega**(2)))+12*kappa*omega**(2)*sigma**(5)*(-2+sigma)-4*omega**(2)*sigma**(6)))
     return fTS, gTS
 
-from collocode import CollocationTransformation
+from .collocode import CollocationTransformation
 
 def teukolsky_starobinsky_check_minus_2(Phi):
     s = -2

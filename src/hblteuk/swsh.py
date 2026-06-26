@@ -1,9 +1,23 @@
 import scipy.sparse
 import scipy.sparse.linalg
-from scipy.special import sph_harm
 from scipy.special import binom
 from scipy.special import factorial, poch
 import numpy as np
+import math
+
+# `scipy.special.sph_harm` (signature ``(m, n, theta=azimuth, phi=polar)``) was
+# deprecated in SciPy 1.15 and removed in 1.17, replaced by ``sph_harm_y`` with a
+# transposed signature ``(n, m, theta=polar, phi=azimuth)``. Provide a shim that
+# keeps the legacy ``(m, n, theta, phi)`` calling convention on both old and new
+# SciPy so the call sites below are unaffected.
+try:
+    from scipy.special import sph_harm
+except ImportError:  # SciPy >= 1.17
+    from scipy.special import sph_harm_y as _sph_harm_y
+
+    def sph_harm(m, n, theta, phi):
+        # legacy theta=azimuthal, phi=polar  ->  new theta=polar, phi=azimuthal
+        return _sph_harm_y(n, m, phi, theta)
 
 """
 Wigner 3j-symbol and Clebsch-Gordon coefficients
@@ -12,7 +26,7 @@ Wigner 3j-symbol and Clebsch-Gordon coefficients
 def fac(n):
     if n < 0:
         return 0
-    return float(np.math.factorial(n))
+    return float(math.factorial(n))
 
 def Yslm(s, l, m, th):
     if np.abs(s) > l:

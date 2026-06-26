@@ -1,16 +1,16 @@
 # mode.py
 import numpy as np
-from utils import chop_matrix
-from geo import MiniGeo
-from cheby import MultiGridChebyshev, MultiGridMultiDomainChebyshev
-from collocode import (CollocationODEFixedStepSolver,
+from .utils import chop_matrix
+from .geo import MiniGeo
+from .cheby import MultiGridChebyshev, MultiGridMultiDomainChebyshev
+from .collocode import (CollocationODEFixedStepSolver,
                        CollocationODESolver,
                        CollocationODEFixedMultiDomainFixedStepSolver,
                        CollocationODEMultiDomainFixedStepSolver)
-from source import integrate_source
-from swsh import SpinWeightedSpheroidalHarmonic
-from swsh import MultiModeSpinWeightedSpherical
-from teuk import (sigma_r, 
+from .source import integrate_source
+from .swsh import SpinWeightedSpheroidalHarmonic
+from .swsh import MultiModeSpinWeightedSpherical
+from .teuk import (sigma_r, 
                   sigma_r_deriv,
                   sigma_r_deriv_sigma, 
                   sigma_r_deriv_sigma_deriv,
@@ -189,6 +189,15 @@ class PointParticleModeGrid(PointParticleMode):
         mode_count_mkn_arr = np.cumsum([self.l_mode_count_for_m(m) for m, k, n in self.mkn_mode_arr])
         return np.split(arr, mode_count_mkn_arr[:-1])
     
+    def radialsolution(self, bc, sigma):
+        return self.amplitudes[bc]*self.homogeneousradialsolution(bc, sigma)
+    
+    def homogeneousradialsolution(self, bc, sigma, deriv = 0):
+        return self.Rslm[bc](sigma, deriv)
+    
+    def polarsolution(self, z):
+        return self.Sslm(z).T
+    
 class TeukolskyPointParticleMode(PointParticleMode):
     pass
     
@@ -216,7 +225,7 @@ class TeukolskyPointParticleModeGenerator:
         if k != 0:
             raise ValueError('Non-zero k-modes are not supported yet')
         
-        if not (s == -2 or s == 0):
+        if not (np.abs(s) == 2 or s == 0):
             raise ValueError(f'Spin-weight {s} is not supported yet. Must be 0 or -2.')
         
         if teuk_solver is None:

@@ -23,6 +23,18 @@ class MiniGeo:
         self.frequencies = self.mino_frequencies[1:]/self.mino_frequencies[0]
         self.radial_solutions = kg.stable.radial_solutions(a, self.constants, self.radial_roots)
 
+    @property
+    def orbitalenergy(self):
+        return self.En
+    
+    @property
+    def orbitalangularmomentum(self):
+        return self.Lz
+    
+    @property
+    def blackholespin(self):
+        return self.a
+
     def r(self, qr):
         return self.radial_solutions[0](qr)
 
@@ -37,6 +49,11 @@ class MiniGeo:
             r = self.r(qr)
         Delta = r**2 - 2.*r + self.a**2
         return np.sign(np.sin(qr))*np.sqrt(np.abs((self.En*(r**2 + self.a**2) - self.a*self.Lz)**2 - Delta*(r**2 + (self.Lz - self.a*self.En)**2 + self.Qc)))
+    
+    def uth(self, qth, th = None):
+        if th is None:
+            th = self.th(qth)
+        return 0
     
     def r_velocity(self, qr):
         rr = self.r(qr)

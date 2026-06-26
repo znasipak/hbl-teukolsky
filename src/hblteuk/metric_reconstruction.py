@@ -1,6 +1,6 @@
-import collocode
-from mode import TeukolskyPointParticleModeGenerator, TeukolskyPointParticleModeGridGenerator
-from geo import MiniGeo
+from . import collocode
+from .mode import TeukolskyPointParticleModeGenerator, TeukolskyPointParticleModeGridGenerator
+from .geo import MiniGeo
 import numpy as np
 
 orbit = MiniGeo(0.9, 20., 0., 1)

@@ -351,7 +351,7 @@ class Chebyshev(ChebyshevNP):
     def coeffs(self):
         return self.coef
 
-"""
+r"""
 class MultiChebyshev
 This class joins together M Chebyshev series f_i of length N that are joined on adjacent domains [x_i, x_{i+1}] 
 for x_i \in (x0, x1, ..., x_M). 

@@ -7,7 +7,7 @@ Author: Zach Nasipak
 import numpy as np
 import numpy as xp
 import numpy.polynomial.chebyshev as ch
-from cheby import (cheby_D_jit,
+from .cheby import (cheby_D_jit,
                    _CHEBY_DMAX,
                    _CHEBY_dsize,
                    Chebyshev,
@@ -104,7 +104,14 @@ def multi_domain_chebyshev_nodes(n, domains, type = 1):
         xnodes = ch.chebpts1(n)
 
     n_domains = len(domains) - 1
-    return np.array([z_of_x(xnodes, domains[i], domains[i+1]) for i in range(n_domains)]) 
+    return np.array([z_of_x(xnodes, domains[i], domains[i+1]) for i in range(n_domains)])
+
+def chebyshev_nodes(n, domain = [-1, 1], type = 1):
+    if type == 2:
+        xnodes = ch.chebpts2(n)
+    else:
+        xnodes = ch.chebpts1(n)
+    return z_of_x(xnodes, domain[0], domain[1])
 
 
 # @jitclass([

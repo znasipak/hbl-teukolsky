@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hbl-teukolsky"
+version = "0.1.0"
+description = "Frequency-domain Teukolsky solver via hyperboloidal slicing, compactification, and pseudospectral collocation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Zachary Nasipak", email = "znasipak@gmail.com" }]
+keywords = [
+    "black-hole-perturbation-theory",
+    "teukolsky",
+    "gravitational-waves",
+    "hyperboloidal",
+    "spectral-methods",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "numba>=0.58",
+    "kerrgeopy>=0.9",
+    "spherical>=1.0",
+    "spheroidal>=0.1",
+]
+
+[project.optional-dependencies]
+# GPU backends are experimental and not yet wired into the array backend.
+# CuPy wheels are CUDA-version specific; prefer `pip install cupy-cuda12x`
+# (or the matching cuda11x build) over the generic `cupy` source build.
+cuda = ["cupy"]
+jax = ["jax"]
+dev = ["pytest>=7", "build", "ipykernel"]
+
+[project.urls]
+Homepage = "https://github.com/znasipak/hbl-teukolsky"
+Repository = "https://github.com/znasipak/hbl-teukolsky"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hblteuk"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/hblteuk", "README.md", "LICENSE", "pyproject.toml"]

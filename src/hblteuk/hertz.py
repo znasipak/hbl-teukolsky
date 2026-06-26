@@ -1,21 +1,68 @@
 import numpy as np
 import pickle
-import collocode
-from collocode import MultiGridMultiDomainChebyshev, MultiGridChebyshev
-import source
+from . import collocode
+from .collocode import MultiGridMultiDomainChebyshev, MultiGridChebyshev
+from . import source
+from .mode import TeukolskyPointParticleModeGridGenerator, TeukolskyPointParticleModeGenerator, PointParticleModeGrid
+from .teuk import (
+        teukolsky_starobinsky_complex_constant, 
+        teukolsky_starobinsky_alpha_plus_m2, 
+        teukolsky_starobinsky_alpha_minus_m2,
+        teukolsky_starobinsky_alpha_plus_p2, 
+        teukolsky_starobinsky_alpha_minus_p2,
+    )
+from .utils import chop_matrix
+from .swsh import MultiModeSpinWeightedSpherical
 
-from mode import TeukolskyPointParticleModeGridGenerator, TeukolskyPointParticleModeGenerator, PointParticleModeGrid
-from teuk import teukolsky_starobinsky_complex_constant
-from utils import chop_matrix
-from swsh import MultiModeSpinWeightedSpherical
+def hertz_amplitude_from_weyl_IRG(s, psiIn, psiUp, ells, emms, a, frequencies, la_chandra):
+    if s == -2:
+        teuk_starob_constant = teukolsky_starobinsky_complex_constant(ells, emms, a, frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*8./teuk_starob_constant
+        psiIn *= hertz_rescale
+        psiUp *= hertz_rescale
+    elif s == 2:
+        teuk_starob_constant = teukolsky_starobinsky_alpha_plus_p2(emms, a, frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*2./teuk_starob_constant
+        psiUp *= hertz_rescale
+        teuk_starob_constant = teukolsky_starobinsky_alpha_minus_p2(emms, a, frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*2./teuk_starob_constant
+        psiIn *= hertz_rescale
+
+    return psiIn, psiUp
+
+def hertz_amplitude_from_weyl_ORG(s, psiIn, psiUp, ells, emms, a, frequencies, la_chandra):
+    if s == -2:
+        teuk_starob_constant = teukolsky_starobinsky_alpha_plus_m2(emms, a, frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*32./teuk_starob_constant
+        psiUp *= hertz_rescale
+        teuk_starob_constant = teukolsky_starobinsky_alpha_minus_m2(emms, a, frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*32./teuk_starob_constant
+        psiIn *= hertz_rescale
+    elif s == 2:
+        teuk_starob_constant = teukolsky_starobinsky_complex_constant(ells, emms, a, frequencies, la_chandra)
+        hertz_rescale = (-1.)**(ells + emms)*8./np.conj(teuk_starob_constant)
+        psiIn *= hertz_rescale
+        psiUp *= hertz_rescale
+
+    return psiIn, psiUp
+
+def spin_weight_from_gauge(gauge):
+    if gauge == 'IRG':
+        return -2
+    elif gauge == 'ORG':
+        return 2
+    else:
+        raise ValueError(f'Gauge {gauge} is not supported yet. Must be IRG or ORG.')
 
 class HertzPointParticleModeGridGenerator(TeukolskyPointParticleModeGridGenerator):
     def solve(self, s, lrange, gauge = 'IRG', reduce = False, **reduce_kwargs):
-        if (s != -2):
-            raise ValueError(f'Spin-weight {s} is not supported yet. Must be -2.')
-        if gauge != 'IRG':
-            raise ValueError(f'Gauge {gauge} is not supported yet. Must be IRG.')
+        if (np.abs(s) != 2):
+            raise ValueError(f'Spin-weight {s} is not supported yet. Must be +/-2.')
+        if gauge != 'IRG' and gauge != 'ORG':
+            raise ValueError(f'Gauge {gauge} is not supported yet. Must be IRG or ORG.')
         
+        s_hertz = spin_weight_from_gauge(gauge)
+
         Phi = PointParticleModeGrid(s, lrange, [0, 0], [0, 0], self.source)
         Phi.basis = "spheroidal"
 
@@ -23,13 +70,25 @@ class HertzPointParticleModeGridGenerator(TeukolskyPointParticleModeGridGenerato
         domainsIn = domains["In"]
         domainsUp = domains["Up"]
 
-        la_chandra = eigenvalues + Phi.s*(Phi.s+1)
+        la_chandra = eigenvalues + s*(s+1)
         ells = Phi.modes[:, 0]
         emms = Phi.modes[:, 1]
-        teuk_starob_constant = teukolsky_starobinsky_complex_constant(ells, emms, Phi.source.a, Phi.frequencies, la_chandra)
-        hertz_rescale = (-1.)**(ells + emms)*8./teuk_starob_constant
-        amplitudes["Up"] *= hertz_rescale
-        amplitudes["In"] *= hertz_rescale
+        if gauge == 'IRG':
+            psiIn, psiUp = hertz_amplitude_from_weyl_IRG(s, amplitudes["In"], amplitudes["Up"], ells, emms, Phi.source.a, Phi.frequencies, la_chandra)
+            amplitudes["Up"] = psiUp
+            amplitudes["In"] = psiIn
+        elif gauge == 'ORG':
+            psiIn, psiUp = hertz_amplitude_from_weyl_ORG(s, amplitudes["In"], amplitudes["Up"], ells, emms, Phi.source.a, Phi.frequencies, la_chandra)
+            amplitudes["Up"] = psiUp
+            amplitudes["In"] = psiIn
+
+        if s_hertz != s:
+            Phi = PointParticleModeGrid(s_hertz, lrange, [0, 0], [0, 0], self.source)
+            Phi.basis = "spheroidal"
+
+            RslmGrid, domains, SslmGrid, _, eigenvalues = self.solve_teukolsky_mode_data(Phi, reduce = reduce, **reduce_kwargs)
+            domainsIn = domains["In"]
+            domainsUp = domains["Up"]
 
         RslmGrid["In"] = np.ascontiguousarray(amplitudes["In"][:, None, None]*RslmGrid["In"])
         RslmGrid["Up"] = np.ascontiguousarray(amplitudes["Up"][:, None, None]*RslmGrid["Up"])
@@ -54,17 +113,19 @@ class HertzPointParticleModeGridGenerator(TeukolskyPointParticleModeGridGenerato
         return Phi
     
     def hertz_from_weyl(self, psi, gauge = 'IRG'):
-        if (psi.s != -2):
-            raise ValueError(f'Spin-weight {psi.s} is not supported yet. Must be -2.')
-        if gauge != 'IRG':
-            raise ValueError(f'Gauge {gauge} is not supported yet. Must be IRG.')
+        s_hertz = spin_weight_from_gauge(gauge)
+        if psi.spinweight != s_hertz:
+            raise ValueError(f'Spin-weight {psi.spinweight} of Weyl scalar must match spin-weight of Hertz potential.')
         
         Phi = psi.copy()
         la_chandra = Phi.eigenvalues + Phi.s*(Phi.s+1)
         ells = Phi.modes[:, 0]
         emms = Phi.modes[:, 1]
         teuk_starob_constant = teukolsky_starobinsky_complex_constant(ells, emms, Phi.source.a, Phi.frequencies, la_chandra)
-        hertz_rescale = (-1.)**(ells + emms)*8./teuk_starob_constant
+        if gauge == 'IRG':
+            hertz_rescale = (-1.)**(ells + emms)*8./teuk_starob_constant
+        elif gauge == 'ORG':
+            hertz_rescale = (-1.)**(ells + emms)*8./np.conj(teuk_starob_constant)
         Phi.amplitude["Up"] *= hertz_rescale
         Phi.amplitude["In"] *= hertz_rescale
         Phi.Rslm["Up"].coeffs *= hertz_rescale

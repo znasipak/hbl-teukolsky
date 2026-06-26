@@ -3,8 +3,8 @@
 import numpy as np
 import numpy as xp
 # from spheroidal import SpinWeightedSpheroidalHarmonic
-from swsh import SpinWeightedSpheroidalHarmonic
-from teuk import (sigma_r, 
+from .swsh import SpinWeightedSpheroidalHarmonic
+from .teuk import (sigma_r, 
                   sigma_r_deriv,
                   sigma_r_deriv_sigma, 
                   sigma_r_deriv_sigma_deriv,
@@ -15,14 +15,45 @@ from teuk import (sigma_r,
 def integrate_source(s, l, m, k, n, geo, Sslm = None, Rslm = None, **kwargs):
     if (s == -2):
         if geo.e == 0.:
-            return gravitational_source_circular(l, m, geo, Sslm = Sslm, Rslm = Rslm, **kwargs)
+            return gravitational_source_circular_minus2(l, m, geo, Sslm = Sslm, Rslm = Rslm, **kwargs)
         elif np.abs(geo.x) == 1.:
             return gravitational_source_eccentric(l, m, n, geo, Sslm = Sslm, Rslm = Rslm, **kwargs)
+    elif (s == 2):
+        if geo.e == 0.: 
+            return gravitational_source_circular_plus2(l, m, geo, Sslm = Sslm, Rslm = Rslm, **kwargs)
     else:
-        return gravitational_source_eccentric(l, m, n, geo, Sslm = Sslm, Rslm = Rslm, **kwargs)
+        return ValueError(f"Source integration not implemented for spin-weight s = {s} and geodesic parameters (p, e, x) = ({geo.p}, {geo.e}, {geo.x})")
+
+def u_13_coeffs(geo, signUr, signUth, rp, zp):
+    En = geo.orbitalenergy
+    Lz = geo.orbitalangularmomentum
+    a = geo.blackholespin
+    rhobar = -1./(rp + 1j*a*zp)
+
+    ur = geo.ur(0, rp)
+    uth = geo.uth(0, zp)
+    
+    u1 = -(En*(rp**2 + a**2) - a*Lz - signUr*ur)/(rp**2 - 2.*rp + a**2)
+    u3 = rhobar/(np.sqrt(2))*(1j*np.sqrt(1 - zp**2)*(a*En - Lz/(1 - zp**2)) - signUth*uth)
+
+    return u1, u3
+
+def u_24_coeffs(geo, signUr, signUth, rp, zp):
+    En = geo.orbitalenergy
+    Lz = geo.orbitalangularmomentum
+    a = geo.blackholespin
+    rho = -1./(rp - 1j*a*zp)
+
+    ur = geo.ur(0, rp)
+    uth = geo.uth(0, zp)
+    
+    u2 = -0.5*(En*(rp**2 + a**2) - a*Lz + signUr*ur)/(rp**2 + a**2*zp**2)
+    u4 = -rho/(np.sqrt(2))*(1j*np.sqrt(1 - zp**2)*(a*En - Lz/(1 - zp**2)) + signUth*uth)
+
+    return u2, u4
 
 
-def gravitational_source_circular(l, m, geo, Sslm = None, Rslm = None, **kwargs):
+def gravitational_source_circular_minus2(l, m, geo, Sslm = None, Rslm = None, **kwargs):
     omega = geo.mode_frequency(m, 0, 0)
     a = geo.a
     kappa = np.sqrt(1 - a**2)
@@ -124,6 +155,108 @@ def gravitational_source_circular(l, m, geo, Sslm = None, Rslm = None, **kwargs)
     Gamma = geo.mino_frequencies[0]
     wronskian = PsiIn*dPsiUp - PsiUp*dPsiIn
     rescale = Rslm.Z_sigma(sp)**2*(rp**2 - 2.*rp + a**2)**(-1)*sigma_r_deriv(rp, kappa)
+    const_wronskian = np.array([normIn, normUp])*rescale*wronskian
+
+    amplitudes = -8.*np.pi*integrand/const_wronskian/Gamma
+    amplitudes_max_error = 0.*amplitudes
+
+    return amplitudes, amplitudes_max_error
+
+def gravitational_source_circular_plus2(l, m, geo, Sslm = None, Rslm = None, **kwargs):
+    omega = geo.mode_frequency(m, 0, 0)
+    a = geo.a
+    kappa = np.sqrt(1 - a**2)
+    s = 2
+
+    if Sslm is None:
+        Sslm = SpinWeightedSpheroidalHarmonic(s, l, m, a*omega)
+
+    rp = geo.radial_roots[0]
+    urp = 0
+    sp = sigma_r(rp, kappa)
+    
+    thp = 0.5*np.pi
+    uth = 0.
+    sthp = np.sin(thp)
+    cthp = np.cos(thp)
+
+    Delta = rp**2 - 2.*rp + a**2
+    DeltaP = 2.*rp - 2.
+    DeltaPP = 2.
+    K = (rp**2 + a**2)*omega - m*a
+    Kp = 2*omega*rp
+    rho = -1./(rp - 1j*a*cthp)
+    rhobar = -1./(rp + 1j*a*cthp)
+
+    # print(l, m)
+    Slm = Sslm.eval(thp)
+    SlmP = Sslm.deriv(thp)
+    SlmPP = Sslm.deriv2(thp)
+
+    dLd1 = m/sthp - a*omega*sthp + cthp/sthp
+    dLd2 = m/sthp - a*omega*sthp + 2.*cthp/sthp
+    dLd2p = -m*cthp/sthp/sthp - a*omega*cthp - 2./sthp/sthp
+    rhoOverRhoP = 1j*a*rho*sthp
+    rhoOverRhoPP = 1j*a*rho*(cthp + 2.*sthp*rhoOverRhoP)
+
+    if Rslm is None:
+        Rslm = HyperboloidalTeukolsky(a, s, l, m, omega, domains=[[0, sp], [1, sp]])
+    
+    Psihbl = Rslm.psi
+
+    sp = Rslm.sigma_r(rp)
+    PsiUp = Psihbl["Up"](sp)
+    PsiIn = Psihbl["In"](sp)
+    dPsiUp = Psihbl["Up"](sp, deriv=1)
+    dPsiIn = Psihbl["In"](sp, deriv=1)
+
+    P,Q,U = teuk_sys(np.array([sp]), Rslm.kappa, s, Rslm.eigenvalue, m*a, omega)
+    d2PsiUp = (-Q[0]*dPsiUp - U[0]*PsiUp)/P[0]
+    d2PsiIn = (-Q[0]*dPsiIn - U[0]*PsiIn)/P[0]
+
+    normUp = np.sqrt(np.max(np.abs([PsiUp, dPsiUp, d2PsiUp])))
+    normIn = np.sqrt(np.max(np.abs([PsiIn, dPsiIn, d2PsiIn])))
+
+    PsiUp *= 1/normUp
+    PsiIn *= 1/normIn
+    dPsiUp *= 1/normUp
+    dPsiIn *= 1/normIn
+    d2PsiUp *= 1/normUp
+    d2PsiIn *= 1/normIn
+
+    All0 = -0.5*pow(rho, -1)*rhobar*(SlmPP + (dLd1 + dLd2 + 2.*rhoOverRhoP)*SlmP + (dLd2p + dLd1*dLd2 - 6.*pow(rhoOverRhoP, 2) + 3.*rhoOverRhoPP + (3.*dLd1 - dLd2)*rhoOverRhoP)*Slm)
+    Alm0 = 2.*pow(np.sqrt(2.)*rho, -1)*( -1.*(rho + rhobar + 1j*K/Delta)*(SlmP + dLd2*Slm) + (rho - rhobar)*a*sthp*K/Delta*Slm)
+    Alm1 = 2.*pow(np.sqrt(2.)*rho, -1)*( SlmP + dLd2*Slm + 1j*(rho - rhobar)*a*sthp*Slm )
+    Amm0 = -pow(rho, -1)*pow(rhobar, -1)*Slm*( 1j*(Kp/Delta - DeltaP/Delta*K/Delta) - K/Delta*K/Delta + 2.*1j*rho*K/Delta )
+    Amm1 = 2.*pow(rho, -1)*pow(rhobar, -1)*Slm*( 1j*K/Delta + rho )
+    Amm2 = -pow(rho, -1)*pow(rhobar, -1)*Slm
+
+    u1, u3 = u_13_coeffs(geo, 1, 1, rp, cthp)
+
+    Cll = u1*u1
+    Clm = u1*u3
+    Cmm = u3*u3
+
+    A0 = All0*Cll + Alm0*Clm + Amm0*Cmm
+    A1 = -(Alm1*Clm + Amm1*Cmm)
+    A2 = Amm2*Cmm
+
+    gs = sigma_r_deriv_sigma(sp, kappa)
+    dgs = sigma_r_deriv_sigma_deriv(sp, kappa)
+
+    Zs = Rslm.Z_sigma(sp)*Delta**2
+    dZs = Rslm.Z_sigma_deriv(sp)*Delta**2 + 2.*Rslm.Z_sigma(sp)*Delta*DeltaP/gs
+    d2Zs = Rslm.Z_sigma_deriv2(sp)*Delta**2 + 4.*Delta*DeltaP/gs*Rslm.Z_sigma_deriv(sp) + 2.*Rslm.Z_sigma(sp)*(DeltaPP*Delta + DeltaP**2 - Delta*DeltaP*dgs)/gs**2
+
+    B0 = A0*Zs + A1*gs*dZs + A2*gs*(dgs*dZs + gs*d2Zs)
+    B1 = A1*gs*Zs + A2*gs*(dgs*Zs + 2.*gs*dZs)
+    B2 = A2*gs*gs*Zs
+
+    integrand = np.array([(B0*PsiUp + B1*dPsiUp + B2*d2PsiUp), (B0*PsiIn + B1*dPsiIn + B2*d2PsiIn)])
+
+    Gamma = geo.mino_frequencies[0]
+    wronskian = PsiIn*dPsiUp - PsiUp*dPsiIn
+    rescale = Rslm.Z_sigma(sp)**2*(rp**2 - 2.*rp + a**2)**(s+1)*gs
     const_wronskian = np.array([normIn, normUp])*rescale*wronskian
 
     amplitudes = -8.*np.pi*integrand/const_wronskian/Gamma
