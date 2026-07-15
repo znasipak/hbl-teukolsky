@@ -253,8 +253,10 @@ def swsh_eigs(s, l, m, g, nmax=None, return_eigenvectors=True):
             Nmax = nmax
     
     mat = spectral_sparse_matrix(s, m, g, Nmax)
-    out = scipy.sparse.linalg.eigs(mat, k=Nmax-2, which='SM', return_eigenvectors=return_eigenvectors)
-    
+    # fixed v0: ARPACK's random start vector makes results nondeterministic at
+    # roundoff level, which breaks regression tests and CPU/GPU comparisons
+    out = scipy.sparse.linalg.eigs(mat, k=Nmax-2, which='SM', v0=np.ones(Nmax), return_eigenvectors=return_eigenvectors)
+
     return out
 
 def Yslm_eigenvalue(s, l, *args):
@@ -322,7 +324,10 @@ class SWSHSeriesBase(SWSHBase):
             
         if "return_eigenvectors" not in kwargs.keys():
             kwargs["return_eigenvectors"] = True
-            
+
+        if "v0" not in kwargs.keys():
+            kwargs["v0"] = np.ones(Nmax)  # deterministic ARPACK start vector
+
         mat = self.sparse_matrix(Nmax)
         return scipy.sparse.linalg.eigs(mat, **kwargs)
     

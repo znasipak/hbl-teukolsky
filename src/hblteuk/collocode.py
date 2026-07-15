@@ -420,7 +420,7 @@ class CollocationODEFixedMultiDomainFixedStepSolver(CollocationODEFixedStepSolve
         coeff_temp = self.solve_ode_coeffs(ode_sys, yi, args = args, domain = subdomain)
         coeff_array.append(coeff_temp[0])
         for j in range(len(yi)):
-            yi[j] = xp.dot(self.bcs_end[j], coeff_array[0])
+            yi[j] = xp.dot(self.bcs_end[j], coeff_array[0])[0]
 
         for i in range(1, domain_num):
             if self.bctype == 1:
@@ -432,7 +432,7 @@ class CollocationODEFixedMultiDomainFixedStepSolver(CollocationODEFixedStepSolve
             coeff_temp = self.solve_ode_coeffs(ode_sys, yi, args = args, domain = subdomain)
             coeff_array.append(coeff_temp[0])
             for j in range(len(yi)):
-                yi[j] = xp.dot(self.bcs_end[j], coeff_array[i])
+                yi[j] = xp.dot(self.bcs_end[j], coeff_array[i])[0]
         coeff_array = np.array(coeff_array)
 
         return coeff_array
