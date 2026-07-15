@@ -16,5 +16,9 @@ except ImportError as _e:  # pragma: no cover
 _jax.config.update("jax_enable_x64", True)
 
 from .swsh import spheroidal_eigs_batched, sphericalY_basis_matrix
+from .chebyshev import evaluate_multidomain
+from .teukolsky import solve_homogeneous_batch, HomogeneousBatch
 
-__all__ = ["spheroidal_eigs_batched", "sphericalY_basis_matrix"]
+__all__ = ["spheroidal_eigs_batched", "sphericalY_basis_matrix",
+           "evaluate_multidomain", "solve_homogeneous_batch",
+           "HomogeneousBatch"]
