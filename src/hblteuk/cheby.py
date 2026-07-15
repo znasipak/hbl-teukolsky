@@ -492,11 +492,13 @@ class MultiDomainChebyshev:
         
     def derivn(self, sigma, n = 2):
         if n == 0:
-            return self.eval(self, sigma)
+            return self.eval(sigma)
         elif n == 1:
-            return self.eval_deriv(self, sigma)
-        
-        derivlist = chebdiff_jit(self.sorted_coeffs, n, self.domain_scale)
+            return self.deriv(sigma)
+
+        # scale must follow the sorted coefficient ordering (descending-domain
+        # representations previously paired domain i with domain N-1-i's width)
+        derivlist = chebdiff_jit(self.sorted_coeffs, n, self.sorted_domain_scale)
         if isvec(sigma):
             return multi_chebyshev_vec(sigma, derivlist, self.sorted_domains, self.ordering)
         else:
