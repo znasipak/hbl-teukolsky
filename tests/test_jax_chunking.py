@@ -27,3 +27,53 @@ def test_chunk_size_arithmetic():
     assert _chunk_size(1e-9, 2**13, 150, 32) == 1      # floors at one mode
     # finer sampling costs more memory -> smaller chunks at fixed budget
     assert _chunk_size(8.0, 2**13, 150, 32) < _chunk_size(8.0, 2**10, 150, 32)
+
+
+@pytest.fixture(scope="module")
+def pair(orbit):
+    kwargs = dict(nsamples=2**8, ndomains=40)
+    full = solve_mode_table(orbit, -2, L, M, N, max_memory_gb=None, **kwargs)
+    # ceil(45 / 10) = 5 chunks, ragged (padded) final chunk of 5 modes
+    chunked = solve_mode_table(orbit, -2, L, M, N,
+                               max_memory_gb=budget_for_chunk(10), **kwargs)
+    return full, chunked
+
+
+def test_chunked_equals_unchunked(pair):
+    # Chunked and unchunked solves are mathematically identical (modes are
+    # independent), but not bit-identical: JAX's batched linear-algebra
+    # kernels are not guaranteed bit-reproducible across different total
+    # batch sizes (verified directly against solve_homogeneous_batch,
+    # independent of the chunking loop -- see dev/MEMORY_CHUNKING_DESIGN.md
+    # Results). rtol=1e-8 is still five orders of magnitude tighter than
+    # the pybhpt physical-validation gate (1e-7) used elsewhere.
+    full, chunked = pair
+    np.testing.assert_allclose(np.asarray(chunked.amplitudes),
+                               np.asarray(full.amplitudes), rtol=1e-8)
+    # error ESTIMATES sit at the floating-point noise floor (~1e-14) for
+    # these well-converged modes; an absolute floor avoids comparing noise
+    np.testing.assert_allclose(np.asarray(chunked.errors),
+                               np.asarray(full.errors), rtol=1e-8, atol=1e-10)
+    np.testing.assert_allclose(chunked.eigenvalues, full.eigenvalues,
+                               rtol=1e-13)
+    np.testing.assert_allclose(chunked.coupling, full.coupling,
+                               rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(np.asarray(chunked.hom.coeffs_up),
+                               np.asarray(full.hom.coeffs_up),
+                               rtol=1e-8, atol=1e-12)
+    np.testing.assert_allclose(np.asarray(chunked.hom.coeffs_in),
+                               np.asarray(full.hom.coeffs_in),
+                               rtol=1e-8, atol=1e-12)
+    np.testing.assert_array_equal(chunked.omega, full.omega)
+    np.testing.assert_array_equal(chunked.lmin, full.lmin)
+
+
+def test_return_radial_false(orbit, pair):
+    full, _ = pair
+    slim = solve_mode_table(orbit, -2, L, M, N, nsamples=2**8, ndomains=40,
+                            max_memory_gb=budget_for_chunk(10),
+                            return_radial=False)
+    assert slim.hom is None
+    np.testing.assert_allclose(np.asarray(slim.amplitudes),
+                               np.asarray(full.amplitudes), rtol=1e-8)
+    np.testing.assert_allclose(slim.eigenvalues, full.eigenvalues, rtol=1e-13)

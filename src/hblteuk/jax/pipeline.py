@@ -11,7 +11,7 @@ from ..teuk import sigma_r
 from ..utils import chop_matrix
 from .source import equatorial_swsh_values, integrate_source_batch, orbit_samples
 from .swsh import spheroidal_eigs_batched
-from .teukolsky import solve_homogeneous_batch
+from .teukolsky import HomogeneousBatch, solve_homogeneous_batch
 
 # per-mode device working-set model (complex128). Constants are calibrated
 # measurements biased high (dev/MEMORY_CHUNKING_DESIGN.md, Results): _K_SRC
@@ -50,12 +50,17 @@ class ModeTableSolution(NamedTuple):
 
 def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
                      nnodes=32, spacing="arcsinh7", nsamples=2**10,
-                     method="fft"):
+                     method="fft", max_memory_gb=8.0, return_radial=True):
     """Solve a radiative (s = -2, equatorial) mode table end to end.
 
     l, m, n: (B,) integer arrays; every mode must be radiative (omega != 0).
     subdomains: optional (subs_up, subs_in) pair (e.g. from the CPU grid
     generator's optimize()); defaults to `spacing`-spaced structures.
+    max_memory_gb bounds the device working set by solving the table in
+    equal-shape mode chunks -- identical results to machine precision
+    (dev/MEMORY_CHUNKING_DESIGN.md); None disables chunking.
+    return_radial=False drops the homogeneous-solution coefficients
+    (hom=None) to bound output memory in flux-only workflows.
     """
     l = np.asarray(l, dtype=np.int64)
     m = np.asarray(m, dtype=np.int64)
@@ -76,18 +81,63 @@ def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
     else:
         subs_up, subs_in = subdomains
 
-    lam, coupling, lmin = spheroidal_eigs_batched(s, l, m, a * omega)
-    lam = np.asarray(lam)
-    hom = solve_homogeneous_batch(s, kappa, lam, m * a, omega,
-                                  subs_up, subs_in, n=nnodes)
+    # table-global spheroidal truncation (same formula as the
+    # spheroidal_eigs_batched default): pinned so chunking cannot change
+    # per-mode results or coupling widths across chunk boundaries
+    g = a * omega
+    lmin_all = np.maximum(abs(s), np.abs(m))
+    nmax = int(np.max((l - lmin_all) + np.round(20 + 2 * np.abs(g)) + 2))
+
     samples = orbit_samples(orbit, nsamples=nsamples)
-    S, dS, d2S = equatorial_swsh_values(s, m, lmin, np.asarray(coupling),
-                                        lam, a * omega)
-    src = integrate_source_batch(samples, lam, m, n, omega, S, dS, d2S,
-                                 hom, subs_up, subs_in, method=method)
+
+    def solve_chunk(idx):
+        lam, coupling, lmin = spheroidal_eigs_batched(s, l[idx], m[idx],
+                                                      g[idx], nmax=nmax)
+        lam = np.asarray(lam)
+        hom = solve_homogeneous_batch(s, kappa, lam, m[idx] * a, omega[idx],
+                                      subs_up, subs_in, n=nnodes)
+        S, dS, d2S = equatorial_swsh_values(s, m[idx], lmin,
+                                            np.asarray(coupling), lam, g[idx])
+        src = integrate_source_batch(samples, lam, m[idx], n[idx],
+                                     omega[idx], S, dS, d2S,
+                                     hom, subs_up, subs_in, method=method)
+        return lam, np.asarray(coupling), lmin, hom, src
+
+    B = len(l)
+    csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1, nnodes)
+    if csize is None or csize >= B:
+        lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
+        amplitudes, errors = src.amplitudes, src.errors
+        if not return_radial:
+            hom = None
+    else:
+        lams, coups, lmins, homs, amps, errs = [], [], [], [], [], []
+        for start in range(0, B, csize):
+            idx = np.arange(start, min(start + csize, B))
+            keep = len(idx)
+            if keep < csize:  # pad so every chunk reuses one compiled trace
+                idx = np.concatenate([idx, np.full(csize - keep, idx[-1])])
+            lam_c, coup_c, lmin_c, hom_c, src_c = solve_chunk(idx)
+            lams.append(lam_c[:keep])
+            coups.append(coup_c[:keep])
+            lmins.append(lmin_c[:keep])
+            amps.append(np.asarray(src_c.amplitudes)[:keep])
+            errs.append(np.asarray(src_c.errors)[:keep])
+            if return_radial:
+                homs.append(HomogeneousBatch(*(np.asarray(x)[:keep]
+                                               for x in hom_c)))
+        lam = np.concatenate(lams)
+        coupling = np.concatenate(coups)
+        lmin = np.concatenate(lmins)
+        amplitudes = np.concatenate(amps)
+        errors = np.concatenate(errs)
+        hom = (HomogeneousBatch(*(np.concatenate([h[i] for h in homs])
+                                  for i in range(len(HomogeneousBatch._fields))))
+               if return_radial else None)
+
     return ModeTableSolution(l, m, n, omega, lam, np.asarray(coupling), lmin,
                              hom, np.asarray(subs_up), np.asarray(subs_in),
-                             src.amplitudes, src.errors)
+                             amplitudes, errors)
 
 
 def _negative_m_coupling(coupling, l, lmin):
