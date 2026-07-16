@@ -13,11 +13,12 @@ from .source import equatorial_swsh_values, integrate_source_batch, orbit_sample
 from .swsh import spheroidal_eigs_batched
 from .teukolsky import HomogeneousBatch, solve_homogeneous_batch
 
-# per-mode device working-set model (complex128). Constants are calibrated
-# measurements biased high (dev/MEMORY_CHUNKING_DESIGN.md, Results): _K_SRC
-# counts live (B, nsamples) arrays in the source stage, _K_RAD live
-# (B, ndomains, nnodes) arrays in the radial stage.
-_K_SRC = 40
+# per-mode device working-set model (complex128). Constants calibrated
+# 2026-07-16 via dev/calibrate_chunk_model.py (measured K_SRC=38.3,
+# K_RAD=5.3; shipped at x1.5 headroom -- dev/MEMORY_CHUNKING_DESIGN.md,
+# Results): _K_SRC counts live (B, nsamples) arrays in the source stage,
+# _K_RAD live (B, ndomains, nnodes) arrays in the radial stage.
+_K_SRC = 58
 _K_RAD = 8
 
 
