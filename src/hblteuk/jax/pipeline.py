@@ -13,6 +13,25 @@ from .source import equatorial_swsh_values, integrate_source_batch, orbit_sample
 from .swsh import spheroidal_eigs_batched
 from .teukolsky import solve_homogeneous_batch
 
+# per-mode device working-set model (complex128). Constants are calibrated
+# measurements biased high (dev/MEMORY_CHUNKING_DESIGN.md, Results): _K_SRC
+# counts live (B, nsamples) arrays in the source stage, _K_RAD live
+# (B, ndomains, nnodes) arrays in the radial stage.
+_K_SRC = 40
+_K_RAD = 8
+
+
+def _per_mode_bytes(nsamples, ndomains, nnodes):
+    return (_K_SRC * nsamples + _K_RAD * ndomains * nnodes) * 16
+
+
+def _chunk_size(max_memory_gb, nsamples, ndomains, nnodes):
+    """Modes per chunk under the budget; None disables chunking."""
+    if max_memory_gb is None:
+        return None
+    return max(1, int(max_memory_gb * 2**30
+                      // _per_mode_bytes(nsamples, ndomains, nnodes)))
+
 
 class ModeTableSolution(NamedTuple):
     l: np.ndarray            # (B,)
