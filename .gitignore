@@ -136,3 +136,4 @@ dmypy.json
 
 # local cluster tooling (not distributed)
 cluster/
+.superpowers/
