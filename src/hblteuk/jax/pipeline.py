@@ -150,7 +150,8 @@ def _negative_m_coupling(coupling, l, lmin):
     return out
 
 
-def solve_circular_grid(orbit, s, lrange, cpu_grid_generator):
+def solve_circular_grid(orbit, s, lrange, cpu_grid_generator,
+                        max_memory_gb=8.0):
     """Batched replacement for TeukolskyPointParticleModeGridGenerator.solve
     on a circular orbit (n = k = 0 grid).
 
@@ -158,7 +159,9 @@ def solve_circular_grid(orbit, s, lrange, cpu_grid_generator):
     subdomain structures and solves the static m = 0 column (omega = 0),
     which stays on the CPU path by design. Returns a PointParticleModeGrid
     wired identically to the CPU version (amplitude-scaled radial grids,
-    chopped coupling, MultiModeSpinWeightedSpherical).
+    chopped coupling, MultiModeSpinWeightedSpherical). max_memory_gb is
+    forwarded to solve_mode_table; the grid always retains the radial
+    coefficients (return_radial is not exposed here).
     """
     from ..cheby import MultiGridMultiDomainChebyshev
     from ..mode import PointParticleModeGrid
@@ -177,7 +180,8 @@ def solve_circular_grid(orbit, s, lrange, cpu_grid_generator):
     l_arr = np.array([c[0] for c in modes_pos])
     m_arr = np.array([c[1] for c in modes_pos])
     sol = solve_mode_table(orbit, s, l_arr, m_arr, np.zeros_like(l_arr),
-                           subdomains=(subs_up, subs_in))
+                           subdomains=(subs_up, subs_in),
+                           max_memory_gb=max_memory_gb)
     amps = np.asarray(sol.amplitudes)
 
     nnodes = sol.hom.coeffs_up.shape[-1]
