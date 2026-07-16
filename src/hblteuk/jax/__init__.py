@@ -23,10 +23,12 @@ from .source import (orbit_samples, equatorial_swsh_values,
 from .summation import (swsh_theta_values, project_to_spherical,
                         assemble_field, waveform_timeseries)
 from .pipeline import solve_mode_table, solve_circular_grid, ModeTableSolution
+from .fluxes import flux_modes, horizon_constant, FluxModes
 
 __all__ = ["spheroidal_eigs_batched", "sphericalY_basis_matrix",
            "evaluate_multidomain", "solve_homogeneous_batch",
            "HomogeneousBatch", "orbit_samples", "equatorial_swsh_values",
            "integrate_source_batch", "SourceAmplitudes", "swsh_theta_values",
            "project_to_spherical", "assemble_field", "waveform_timeseries",
-           "solve_mode_table", "solve_circular_grid", "ModeTableSolution"]
+           "solve_mode_table", "solve_circular_grid", "ModeTableSolution",
+           "flux_modes", "horizon_constant", "FluxModes"]
