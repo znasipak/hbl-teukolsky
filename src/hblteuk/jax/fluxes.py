@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 ZERO_FREQ_TOL = 1e-8
 
@@ -33,12 +34,14 @@ def horizon_constant(m, a, omega, lam):
 
 
 class FluxModes(NamedTuple):
-    Edot: jax.Array   # (B, 2): [infinity, horizon]
-    Ldot: jax.Array   # (B, 2)
+    Edot: jax.Array          # (B, 2): [infinity, horizon]
+    Ldot: jax.Array          # (B, 2)
+    Qdot: object = None      # (B, 2) when carter data given, else None
 
 
 def flux_modes(amplitudes, m, omega, eigenvalues, a,
-               zero_freq_tol=ZERO_FREQ_TOL):
+               zero_freq_tol=ZERO_FREQ_TOL, k=None, n=None,
+               carter_frequencies=None):
     """Per-mode energy and angular-momentum fluxes (s = -2).
 
     amplitudes (B, 2) in the pipeline's [In, Up] order; m, omega,
@@ -65,4 +68,14 @@ def flux_modes(amplitudes, m, omega, eigenvalues, a,
     e_hor = horizon_constant(m, a, w, lam) * pref * jnp.abs(amplitudes[:, 0]) ** 2
     Edot = jnp.where(radiative[:, None], jnp.stack([e_inf, e_hor], axis=1), 0.0)
     Ldot = jnp.where(radiative[:, None], (m / w)[:, None] * Edot, 0.0)
-    return FluxModes(Edot, Ldot)
+    Qdot = None
+    if carter_frequencies is not None and k is not None and n is not None:
+        # Qdot = (2*M_mkn/omega)*Edot, M_mkn = m*cPh + k*cTh + n*cR
+        # (pybhpt carter_flux_factor; MiniGeo.carter_frequencies supplies
+        # the (cR, cTh, cPh) triple)
+        cR, cTh, cPh = (float(c) for c in np.asarray(carter_frequencies))
+        Mmkn = (m * cPh + jnp.asarray(k, dtype=jnp.float64) * cTh
+                + jnp.asarray(n, dtype=jnp.float64) * cR)
+        Qdot = jnp.where(radiative[:, None],
+                         (2 * Mmkn / w)[:, None] * Edot, 0.0)
+    return FluxModes(Edot, Ldot, Qdot)

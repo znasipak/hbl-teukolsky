@@ -21,11 +21,14 @@ from .teukolsky import solve_homogeneous_batch, HomogeneousBatch
 from .source import (orbit_samples, equatorial_swsh_values,
                      integrate_source_batch, SourceAmplitudes,
                      polar_samples, PolarSamples, polar_swsh_values,
-                     integrate_source_spherical_batch)
+                     integrate_source_spherical_batch,
+                     generic_samples, GenericSamples,
+                     integrate_source_generic_batch)
 from .summation import (swsh_theta_values, project_to_spherical,
                         assemble_field, waveform_timeseries)
 from .pipeline import (solve_mode_table, solve_circular_grid, ModeTableSolution,
-                       solve_spherical_mode_table, SphericalModeSolution)
+                       solve_spherical_mode_table, SphericalModeSolution,
+                       solve_generic_mode_table, GenericModeSolution)
 from .fluxes import flux_modes, horizon_constant, FluxModes
 
 __all__ = ["spheroidal_eigs_batched", "sphericalY_basis_matrix",
@@ -37,4 +40,6 @@ __all__ = ["spheroidal_eigs_batched", "sphericalY_basis_matrix",
            "flux_modes", "horizon_constant", "FluxModes",
            "polar_samples", "PolarSamples", "polar_swsh_values",
            "integrate_source_spherical_batch", "solve_spherical_mode_table",
-           "SphericalModeSolution"]
+           "SphericalModeSolution", "generic_samples", "GenericSamples",
+           "integrate_source_generic_batch", "solve_generic_mode_table",
+           "GenericModeSolution"]

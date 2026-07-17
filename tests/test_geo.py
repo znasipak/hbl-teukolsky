@@ -85,3 +85,26 @@ def test_equatorial_orbits_unchanged():
     np.testing.assert_allclose(geo.phith(q), 0.0, atol=1e-12)
     # the legacy positional call the CPU s=+2 source path makes
     assert geo.uth(0, 0.0) == 0.0
+
+
+def test_carter_frequencies_vs_pybhpt():
+    # hard-coded reference verified against pybhpt geo.carterfrequencies
+    # (ordering [cR, cTh, cPh]) during Increment C recon, 8+ digits
+    # (dev/PHASE5C_PLAN.md "Verified facts")
+    g = MiniGeo(0.9, 8.0, 0.3, 0.6)
+    cf = g.carter_frequencies()
+    # reference is pybhpt's printed output (8 sig figs), so the gate is
+    # print precision; the underlying agreement was verified to 8+ digits
+    np.testing.assert_allclose(
+        cf, [-0.00635112, 3.29591195, 1.30984174], rtol=1e-6, atol=5e-9)
+    assert cf is g.carter_frequencies()   # cached
+
+
+def test_carter_frequencies_equatorial_zero():
+    # zp = 0 => freqFactor = mFactor = 0 => cR = cPh = 0, cTh = Upsilon_theta
+    g = MiniGeo(0.9, 10.0, 0.2, 1.0)
+    cR, cTh, cPh = g.carter_frequencies()
+    assert abs(cR) < 1e-12 and abs(cPh) < 1e-12
+    assert cTh == pytest.approx(g.mino_frequencies[2], rel=1e-12)
+    # M_mkn for k = 0 vanishes identically on equatorial orbits
+    assert abs(0 * cPh + 0 * cTh + 3 * cR) < 1e-12

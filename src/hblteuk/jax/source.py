@@ -89,6 +89,50 @@ def polar_swsh_values(s, m_arr, lmin_arr, coeffs, eigenvalues, gamma_arr, th):
     return S, dS, d2S
 
 
+# ---- host-side generic sampling (e != 0, |x| < 1): both torus axes ----------
+
+class GenericSamples(NamedTuple):
+    qr: np.ndarray      # (nq,) uniform on [0, 2 pi), qr = 0 at periapsis
+    rp: np.ndarray      # (nq,)
+    urp: np.ndarray     # (nq,) signed radial velocity
+    tr: np.ndarray      # (nq,)
+    phir: np.ndarray    # (nq,)
+    qth: np.ndarray     # (nth,) uniform on [0, 2 pi), qth = 0 at theta_min
+    thp: np.ndarray     # (nth,)
+    uthp: np.ndarray    # (nth,) signed d(theta)/d(lambda)
+    tth: np.ndarray     # (nth,)
+    phith: np.ndarray   # (nth,)
+    constants: tuple    # (En, Lz, Q)
+    gamma: float        # Mino time Gamma
+    a: float
+    kappa: float
+
+
+def generic_samples(orbit, nsamples=2**10, ntheta=2**8):
+    """Sample both torus axes on full-period uniform grids (host)."""
+    if orbit.e == 0 or abs(orbit.x) == 1:
+        raise ValueError("generic_samples requires e != 0 and |x| < 1; "
+                         "degenerate orbits use the 1D integrators")
+    qr = 2 * np.pi * np.arange(nsamples) / nsamples
+    rp = orbit.r(qr)
+    urp = orbit.ur(qr)
+    urp[0] = 0.0
+    if nsamples % 2 == 0:
+        urp[nsamples // 2] = 0.0
+    qth = 2 * np.pi * np.arange(ntheta) / ntheta
+    thp = orbit.th(qth)
+    uthp = orbit.uth(qth)
+    uthp[0] = 0.0
+    if ntheta % 2 == 0:
+        uthp[ntheta // 2] = 0.0
+    a = orbit.a
+    return GenericSamples(qr, rp, urp, orbit.tr(qr), orbit.phir(qr),
+                          qth, thp, uthp, orbit.tth(qth), orbit.phith(qth),
+                          tuple(orbit.constants),
+                          float(orbit.mino_frequencies[0]),
+                          a, float(np.sqrt(1 - a**2)))
+
+
 # ---- equatorial spheroidal-harmonic values (host basis, batched dot) ---------
 
 def equatorial_swsh_values(s, m_arr, lmin_arr, coeffs, eigenvalues, gamma_arr):
@@ -316,6 +360,51 @@ def integrate_source_batch(samples, lam, m, n, omega, S_eq, dS_eq, d2S_eq,
         psi_arrs, method)
 
 
+# ---- shared Newman-Penrose A/C assembly (full-theta forms) --------------------
+
+def _source_coefficients(a, En, Lz, m2, om2, rp, urp, sth, cth, uthp,
+                         S, dS, d2S):
+    """Newman-Penrose A/C assembly, elementwise in whatever shapes the
+    caller broadcasts (sphinc: fixed rp, theta arrays; generic scan: rp
+    arrays, fixed theta). Expressions are the full-theta forms of CPU
+    source.py; returns (A0, A1, A2)."""
+    Delta = rp**2 - 2 * rp + a**2
+    DeltaSqrt2 = SQRT2 * Delta
+    rho = -1.0 / (rp - 1j * a * cth)
+    rhobar = jnp.conj(rho)
+    Sigma = 1.0 / (rho * rhobar)
+    Kt = (rp**2 + a**2) * om2 - (m2 * a)
+
+    L1 = -m2 / sth + a * om2 * sth + cth / sth
+    L2 = -m2 / sth + a * om2 * sth + 2 * cth / sth
+    L2p = m2 * cth / sth**2 + a * om2 * cth - 2.0 / sth**2
+    L2S = dS + L2 * S
+    L1L2S = d2S + L1 * dS + L2p * S + L2 * dS + L1 * L2 * S
+
+    Ann0 = (-rho**(-2) * rhobar**(-1) * DeltaSqrt2**(-2)
+            * (rho**(-1) * L1L2S + 3j * a * sth * L1 * S + 3j * a * cth * S
+               + 2j * a * sth * dS - 1j * a * sth * L2 * S))
+    Anmbar0 = (rho**(-3) / DeltaSqrt2
+               * ((rho + rhobar - 1j * Kt / Delta) * L2S
+                  + (rho - rhobar) * a * sth * Kt / Delta * S))
+    Anmbar1 = -(rho**(-3) / DeltaSqrt2) * (L2S + 1j * (rho - rhobar)
+                                           * a * sth * S)
+    Ambarmbar0 = (rho**(-3) * rhobar * DeltaSqrt2**(-2)
+                  * (0.5 * Kt**2 + 1j * Kt * (1 - rp + Delta * rho)
+                     + 1j * rp * om2 * Delta) * S)
+    Ambarmbar1 = -0.5 * rho**(-3) * rhobar * (1j * Kt / Delta - rho) * S
+    Ambarmbar2 = -0.25 * rho**(-3) * rhobar * S
+
+    Cr = (En * (rp**2 + a**2) - a * Lz + urp) / (2 * Sigma)
+    Cth = rho * (1j * sth * (a * En - Lz / sth**2) + uthp) / SQRT2
+    Cnn, Cnmbar, Cmbarmbar = Cr * Cr, Cr * Cth, Cth * Cth
+
+    A0 = Ann0 * Cnn + Anmbar0 * Cnmbar + Ambarmbar0 * Cmbarmbar
+    A1 = -(Anmbar1 * Cnmbar + Ambarmbar1 * Cmbarmbar)
+    A2 = Ambarmbar2 * Cmbarmbar
+    return A0, A1, A2
+
+
 # ---- spherical-inclined integrand: 1D q_theta Fourier extraction --------------
 
 @functools.partial(jax.jit, static_argnums=(0, 13))
@@ -338,43 +427,13 @@ def _integrate_spherical_core(s, kappa, a, En, Lz, gamma_mino, rp, polar_arrs,
     psi_in, dpsi_in, d2psi_in = (x / norm_in for x in
                                  (psi_in, dpsi_in, d2psi_in))
 
-    # general-theta Newman-Penrose projections (source.py full-theta forms)
+    # general-theta Newman-Penrose projections via the shared assembly
+    # (fixed rp scalar, theta arrays; u_r = 0 on spherical orbits)
     sth = jnp.sin(thp)
     cth = jnp.cos(thp)
     Delta = rp**2 - 2 * rp + a**2
-    DeltaSqrt2 = SQRT2 * Delta
-    rho = -1.0 / (rp - 1j * a * cth)                # (nq,)
-    rhobar = jnp.conj(rho)
-    Sigma = 1.0 / (rho * rhobar)
-    Kt = (rp**2 + a**2) * om - ma[:, None]          # (B, 1)
-
-    L1 = -m[:, None] / sth + a * om * sth + cth / sth          # (B, nq)
-    L2 = -m[:, None] / sth + a * om * sth + 2 * cth / sth
-    L2p = m[:, None] * cth / sth**2 + a * om * cth - 2.0 / sth**2
-    L2S = dS + L2 * S
-    L1L2S = d2S + L1 * dS + L2p * S + L2 * dS + L1 * L2 * S
-
-    Ann0 = (-rho**(-2) * rhobar**(-1) * DeltaSqrt2**(-2)
-            * (rho**(-1) * L1L2S + 3j * a * sth * L1 * S + 3j * a * cth * S
-               + 2j * a * sth * dS - 1j * a * sth * L2 * S))
-    Anmbar0 = (rho**(-3) / DeltaSqrt2
-               * ((rho + rhobar - 1j * Kt / Delta) * L2S
-                  + (rho - rhobar) * a * sth * Kt / Delta * S))
-    Anmbar1 = -(rho**(-3) / DeltaSqrt2) * (L2S + 1j * (rho - rhobar)
-                                           * a * sth * S)
-    Ambarmbar0 = (rho**(-3) * rhobar * DeltaSqrt2**(-2)
-                  * (0.5 * Kt**2 + 1j * Kt * (1 - rp + Delta * rho)
-                     + 1j * rp * om * Delta) * S)
-    Ambarmbar1 = -0.5 * rho**(-3) * rhobar * (1j * Kt / Delta - rho) * S
-    Ambarmbar2 = -0.25 * rho**(-3) * rhobar * S
-
-    Cr = (En * (rp**2 + a**2) - a * Lz) / (2 * Sigma)           # u_r = 0
-    Cth = rho * (1j * sth * (a * En - Lz / sth**2) + uthp) / SQRT2
-    Cnn, Cnmbar, Cmbarmbar = Cr * Cr, Cr * Cth, Cth * Cth       # (nq,)
-
-    A0 = Ann0 * Cnn + Anmbar0 * Cnmbar + Ambarmbar0 * Cmbarmbar
-    A1 = -(Anmbar1 * Cnmbar + Ambarmbar1 * Cmbarmbar)
-    A2 = Ambarmbar2 * Cmbarmbar
+    A0, A1, A2 = _source_coefficients(a, En, Lz, m[:, None], om,
+                                      rp, 0.0, sth, cth, uthp, S, dS, d2S)
 
     Zs = _Z_sigma(sig, kappa, s, ma, omega)         # (B,)
     dZs = _Z_sigma_deriv(sig, kappa, s, ma, omega)
@@ -462,3 +521,223 @@ def integrate_source_spherical_batch(samples, lam, m, k, omega, S, dS, d2S,
         jnp.asarray(k, dtype=jnp.int64),
         jnp.asarray(omega, dtype=jnp.complex128),
         psi_arrs, method)
+
+
+# ---- generic-orbit integrand: 2D torus, memory-safe q_theta contraction ------
+
+@functools.partial(jax.jit, static_argnums=(0,))
+def _integrate_generic_core(s, kappa, a, En, Lz, gamma_mino, radial_arrs,
+                            polar_arrs, lam, m, k, n, omega, psi_arrs):
+    rp, urp, tr, phir, qr = radial_arrs
+    thp, uthp, tth, phith, qth = polar_arrs
+    (psi_up, dpsi_up, d2psi_up, psi_in, dpsi_in, d2psi_in,
+     S, dS, d2S) = psi_arrs        # psi_* (B, nq); S* (B, nth)
+    nq = rp.shape[0]
+    nth = thp.shape[0]
+
+    ma = m * a
+    om = omega[:, None]
+
+    norm_up = jnp.max(jnp.abs(jnp.stack([psi_up, dpsi_up, d2psi_up])),
+                      axis=(0, 2))
+    norm_in = jnp.max(jnp.abs(jnp.stack([psi_in, dpsi_in, d2psi_in])),
+                      axis=(0, 2))
+    psi_up, dpsi_up, d2psi_up = (x / norm_up[:, None]
+                                 for x in (psi_up, dpsi_up, d2psi_up))
+    psi_in, dpsi_in, d2psi_in = (x / norm_in[:, None]
+                                 for x in (psi_in, dpsi_in, d2psi_in))
+
+    # radial-only factors, precomputed once (Phase 3 shapes)
+    sig = 2 * kappa / (rp - (1 - kappa))            # (nq,)
+    sigB = sig[None, :]
+    Zs = _Z_sigma(sigB, kappa, s, ma[:, None], om)
+    dZs = _Z_sigma_deriv(sigB, kappa, s, ma[:, None], om)
+    d2Zs = _Z_sigma_deriv2(sigB, kappa, s, ma[:, None], om)
+    gs = -sig**2 / (2 * kappa)
+    dgs = -sig / kappa
+    phase_r = jnp.exp(1j * (om * tr[None, :] - m[:, None] * phir[None, :]))
+    m2 = m[:, None]
+
+    def theta_slice(carry, xs):
+        Je_up, Jo_up, Je_in, Jo_in, absJ, idx = carry
+        th_j, uth_j, tth_j, phith_j, qth_j, S_j, dS_j, d2S_j = xs
+        sth = jnp.sin(th_j)
+        cth = jnp.cos(th_j)
+        A0, A1, A2 = _source_coefficients(a, En, Lz, m2, om, rp, urp,
+                                          sth, cth, uth_j,
+                                          S_j[:, None], dS_j[:, None],
+                                          d2S_j[:, None])
+        B0 = A0 * Zs + A1 * gs * dZs + A2 * gs * (dgs * dZs + gs * d2Zs)
+        B1 = A1 * gs * Zs + A2 * gs * (dgs * Zs + 2 * gs * dZs)
+        B2 = A2 * gs * gs * Zs
+        # polar phase * q_theta Fourier weight: one scalar per mode
+        w = jnp.exp(1j * (omega * tth_j - m * phith_j + k * qth_j))[:, None]
+        Ju = (B0 * psi_up + B1 * dpsi_up + B2 * d2psi_up) * phase_r * w
+        Ji = (B0 * psi_in + B1 * dpsi_in + B2 * d2psi_in) * phase_r * w
+        even = (idx % 2 == 0)
+        we = jnp.where(even, 1.0, 0.0)
+        wo = 1.0 - we
+        carry = (Je_up + we * Ju, Jo_up + wo * Ju,
+                 Je_in + we * Ji, Jo_in + wo * Ji,
+                 absJ + jnp.mean(jnp.abs(Ju), axis=-1)
+                      + jnp.mean(jnp.abs(Ji), axis=-1),
+                 idx + 1)
+        return carry, None
+
+    B = m.shape[0]
+    zeros = jnp.zeros((B, nq), dtype=jnp.complex128)
+    xs = (thp, uthp, tth, phith, qth,
+          jnp.transpose(S), jnp.transpose(dS), jnp.transpose(d2S))
+    (Je_up, Jo_up, Je_in, Jo_in, absJ, _), _ = jax.lax.scan(
+        theta_slice, (zeros, zeros, zeros, zeros,
+                      jnp.zeros((B,)), jnp.int32(0)), xs)
+
+    # contracted J~(qr) per family: mean over theta samples
+    J = jnp.stack([(Je_up + Jo_up) / nth, (Je_in + Jo_in) / nth])  # (2, B, nq)
+
+    # qr-axis extraction: ifft bin n + aliasing tail (Phase 3)
+    spec = jnp.fft.ifft(J, axis=-1)
+    nn = (jnp.mod(n, nq))[None, :, None]
+    c = jnp.take_along_axis(spec, nn, axis=-1)[:, :, 0]
+    freq = jnp.fft.fftfreq(nq, d=1.0 / nq)
+    tail_r = jnp.max(jnp.where(jnp.abs(freq)[None, None, :] >= nq // 4,
+                               jnp.abs(spec), 0.0), axis=-1)
+    err_r = tail_r / jnp.abs(c)
+
+    # q_theta-axis estimate: even vs odd half-grid rules (staggered)
+    halves = jnp.stack([2 * Je_up / nth, 2 * Jo_up / nth,
+                        2 * Je_in / nth, 2 * Jo_in / nth])   # (4, B, nq)
+    ch = jnp.take_along_axis(jnp.fft.ifft(halves, axis=-1),
+                             (jnp.mod(n, nq))[None, :, None],
+                             axis=-1)[:, :, 0]               # (4, B)
+    err_th_up = 0.5 * jnp.abs(1 - ch[1] / ch[0])
+    err_th_in = 0.5 * jnp.abs(1 - ch[3] / ch[2])
+    err_th = jnp.stack([err_th_up, err_th_in])
+
+    canc = 1e-15 / jnp.abs(c / (absJ / (2 * nth))[None, :])
+    err = jnp.maximum(jnp.maximum(err_r, err_th), canc)
+
+    # Wronskian and rescale at qr = 0 (periapsis), Phase 3 conventions
+    W = psi_in[:, 0] * dpsi_up[:, 0] - psi_up[:, 0] * dpsi_in[:, 0]
+    sig0 = sig[0]
+    rp0 = rp[0]
+    rescale = (_Z_sigma(sig0, kappa, s, ma, omega)**2
+               * (rp0**2 - 2 * rp0 + a**2)**(-1)
+               * (-2 * kappa / (rp0 - (1 - kappa))**2))
+    const_w = jnp.stack([norm_in, norm_up]) * rescale[None, :] * W[None, :]
+
+    amps = -8 * jnp.pi * c / const_w / gamma_mino   # (2, B): [In, Up]
+    return SourceAmplitudes(amps.T, err.T)
+
+
+def _integrate_generic_fft2(s, kappa, a, En, Lz, gamma_mino, radial_arrs,
+                            polar_arrs, lam, m, k, n, omega, psi_arrs):
+    # small-batch diagnostic: materializes (B, nth, nq); NOT for production
+    rp, urp, tr, phir, qr = radial_arrs
+    thp, uthp, tth, phith, qth = polar_arrs
+    (psi_up, dpsi_up, d2psi_up, psi_in, dpsi_in, d2psi_in,
+     S, dS, d2S) = psi_arrs
+    nq, nth = rp.shape[0], thp.shape[0]
+    ma = m * a
+    om = omega[:, None, None]
+    m3 = m[:, None, None]
+
+    norm_up = jnp.max(jnp.abs(jnp.stack([psi_up, dpsi_up, d2psi_up])),
+                      axis=(0, 2))
+    norm_in = jnp.max(jnp.abs(jnp.stack([psi_in, dpsi_in, d2psi_in])),
+                      axis=(0, 2))
+    psi_up, dpsi_up, d2psi_up = (x[:, None, :] / norm_up[:, None, None]
+                                 for x in (psi_up, dpsi_up, d2psi_up))
+    psi_in, dpsi_in, d2psi_in = (x[:, None, :] / norm_in[:, None, None]
+                                 for x in (psi_in, dpsi_in, d2psi_in))
+
+    sig = 2 * kappa / (rp - (1 - kappa))
+    Zs = _Z_sigma(sig[None, None, :], kappa, s, ma[:, None, None], om)
+    dZs = _Z_sigma_deriv(sig[None, None, :], kappa, s, ma[:, None, None], om)
+    d2Zs = _Z_sigma_deriv2(sig[None, None, :], kappa, s, ma[:, None, None], om)
+    gs = -sig**2 / (2 * kappa)
+    dgs = -sig / kappa
+
+    A0, A1, A2 = _source_coefficients(
+        a, En, Lz, m3, om, rp[None, None, :], urp[None, None, :],
+        jnp.sin(thp)[None, :, None], jnp.cos(thp)[None, :, None],
+        uthp[None, :, None], S[:, :, None], dS[:, :, None], d2S[:, :, None])
+    B0 = A0 * Zs + A1 * gs * dZs + A2 * gs * (dgs * dZs + gs * d2Zs)
+    B1 = A1 * gs * Zs + A2 * gs * (dgs * Zs + 2 * gs * dZs)
+    B2 = A2 * gs * gs * Zs
+
+    phase = jnp.exp(1j * (om * (tr[None, None, :] + tth[None, :, None])
+                          - m3 * (phir[None, None, :] + phith[None, :, None])
+                          + (jnp.asarray(k)[:, None, None] * qth[None, :, None])))
+    J_up = (B0 * psi_up + B1 * dpsi_up + B2 * d2psi_up) * phase
+    J_in = (B0 * psi_in + B1 * dpsi_in + B2 * d2psi_in) * phase
+    J = jnp.stack([J_up, J_in])                     # (2, B, nth, nq)
+
+    # the e^{ik qth} weight is already folded into the phase, so the
+    # k-content of every mode sits at the qth-DC bin: take ifft2 bin (0, n)
+    spec = jnp.fft.ifft2(J, axes=(-2, -1))
+    nn = jnp.mod(n, nq)
+    c = spec[:, jnp.arange(m.shape[0]), 0, nn]
+    absJ = jnp.mean(jnp.abs(J), axis=(-2, -1))
+    canc = 1e-15 / jnp.abs(c / absJ)
+    freq_th = jnp.abs(jnp.fft.fftfreq(nth, 1 / nth))[None, None, :, None]
+    freq_r = jnp.abs(jnp.fft.fftfreq(nq, 1 / nq))[None, None, None, :]
+    tail = jnp.max(jnp.where((freq_th >= nth // 4) | (freq_r >= nq // 4),
+                             jnp.abs(spec), 0.0), axis=(-2, -1))
+    err = jnp.maximum(tail / jnp.abs(c), canc)
+
+    W = psi_in[:, 0, 0] * dpsi_up[:, 0, 0] - psi_up[:, 0, 0] * dpsi_in[:, 0, 0]
+    sig0, rp0 = sig[0], rp[0]
+    rescale = (_Z_sigma(sig0, kappa, s, ma, omega)**2
+               * (rp0**2 - 2 * rp0 + a**2)**(-1)
+               * (-2 * kappa / (rp0 - (1 - kappa))**2))
+    const_w = jnp.stack([norm_in, norm_up]) * rescale[None, :] * W[None, :]
+    amps = -8 * jnp.pi * c / const_w / gamma_mino
+    return SourceAmplitudes(amps.T, err.T)
+
+
+def integrate_source_generic_batch(samples, lam, m, k, n, omega, S, dS, d2S,
+                                   hom, subdomains_up, subdomains_in,
+                                   method="fft"):
+    """Batched Teukolsky-mode amplitudes for a generic orbit (2D torus).
+
+    samples: GenericSamples. lam/m/k/n/omega: (B,) mode table (s = -2,
+    omega = m*Omega_phi + k*Omega_theta + n*Omega_r). S/dS/d2S: (B, nth)
+    from polar_swsh_values on samples.thp. method: "fft" (lax.scan over
+    q_theta, O(B*nq) working set, staggered-theta + FFT-tail error
+    estimates) or "fft2" (materializes (B, nth, nq) -- small-batch
+    diagnostic only).
+
+    Returns SourceAmplitudes with amplitudes (B, 2) ordered [In, Up] and
+    relative error estimates (B, 2).
+    """
+    if method not in ("fft", "fft2"):
+        raise ValueError("method must be 'fft' or 'fft2'")
+    s = -2
+    sig = 2 * samples.kappa / (samples.rp - (1 - samples.kappa))
+
+    psi = []
+    for coeffs, subs in [(hom.coeffs_up, subdomains_up),
+                         (hom.coeffs_in, subdomains_in)]:
+        for d in (0, 1, 2):
+            psi.append(evaluate_multidomain(coeffs, subs, sig, deriv=d))
+
+    En, Lz, _ = samples.constants
+    radial_arrs = tuple(jnp.asarray(x) for x in
+                        (samples.rp, samples.urp, samples.tr, samples.phir,
+                         samples.qr))
+    polar_arrs = tuple(jnp.asarray(x) for x in
+                       (samples.thp, samples.uthp, samples.tth,
+                        samples.phith, samples.qth))
+    psi_arrs = tuple(psi) + (jnp.asarray(S), jnp.asarray(dS), jnp.asarray(d2S))
+    args = (s, samples.kappa, samples.a, En, Lz, samples.gamma,
+            radial_arrs, polar_arrs,
+            jnp.asarray(lam, dtype=jnp.complex128),
+            jnp.asarray(m, dtype=jnp.float64),
+            jnp.asarray(k, dtype=jnp.float64),
+            jnp.asarray(n, dtype=jnp.int64),
+            jnp.asarray(omega, dtype=jnp.complex128),
+            psi_arrs)
+    if method == "fft":
+        return _integrate_generic_core(*args)
+    return _integrate_generic_fft2(*args)

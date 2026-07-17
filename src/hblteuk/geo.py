@@ -86,3 +86,21 @@ class MiniGeo:
 
     def mode_frequency(self, m, k, n):
         return np.dot(self.frequencies, (n, k, m))
+    def carter_frequencies(self, nsamples = 2**12):
+        # (cR, cTh, cPh), pybhpt conventions (geo.cpp kerr_geo_carter_frequencies
+        # with the chi-quadrature reduced to a uniform-qth Mino average; the
+        # Upsilon_theta factors cancel -- derivation + verification in
+        # dev/PHASE5C_PLAN.md). Uses |Upsilon_theta| like mino_frequencies.
+        if not hasattr(self, "_carter_frequencies"):
+            a, En, Lz = self.a, self.En, self.Lz
+            qth = 2 * np.pi * np.arange(nsamples) / nsamples
+            zp = np.cos(self.th(qth))
+            freqFactor = a * Lz - a * a * En - np.mean(
+                a * Lz - a * a * En * (1 - zp**2))
+            mFactor = Lz - a * En - np.mean(Lz / (1 - zp**2) - a * En)
+            gamma, upR, upTh, upPh = self.mino_frequencies
+            self._carter_frequencies = np.array(
+                [freqFactor * upR / gamma,
+                 freqFactor * upTh / gamma + upTh,
+                 freqFactor * upPh / gamma - mFactor])
+        return self._carter_frequencies

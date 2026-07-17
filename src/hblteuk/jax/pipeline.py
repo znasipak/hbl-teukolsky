@@ -9,7 +9,8 @@ import numpy as np
 from ..collocode import generate_subdomain_list
 from ..teuk import sigma_r
 from ..utils import chop_matrix
-from .source import (equatorial_swsh_values, integrate_source_batch,
+from .source import (equatorial_swsh_values, generic_samples,
+                     integrate_source_batch, integrate_source_generic_batch,
                      integrate_source_spherical_batch, orbit_samples,
                      polar_samples, polar_swsh_values)
 from .swsh import spheroidal_eigs_batched
@@ -309,3 +310,112 @@ def solve_circular_grid(orbit, s, lrange, cpu_grid_generator,
     psi4.amplitudes = amplitudes
     psi4.domains["In"], psi4.domains["Up"] = subs_in, subs_up
     return psi4
+
+
+class GenericModeSolution(NamedTuple):
+    l: np.ndarray            # (B,)
+    m: np.ndarray
+    k: np.ndarray
+    n: np.ndarray
+    omega: np.ndarray
+    eigenvalues: np.ndarray
+    coupling: np.ndarray     # (B, nterms) spherical-expansion coefficients
+    lmin: np.ndarray
+    hom: object              # HomogeneousBatch
+    subdomains_up: np.ndarray
+    subdomains_in: np.ndarray
+    amplitudes: jax.Array    # (B, 2) [In, Up]
+    errors: jax.Array        # (B, 2)
+
+
+def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
+                             ndomains=150, nnodes=32, spacing="arcsinh7",
+                             nsamples=2**10, ntheta=2**8, method="fft",
+                             max_memory_gb=8.0, return_radial=True):
+    """Solve a radiative (s = -2) generic-orbit mode table end to end.
+
+    orbit: MiniGeo with e != 0 and |x| < 1. l, m, k, n: (B,) integers;
+    omega = m*Omega_phi + k*Omega_theta + n*Omega_r must be nonzero.
+    2D torus source contracted over q_theta (dev/PHASE5C.md); working set
+    O(B*nq) so the chunking cost model of solve_mode_table applies with
+    nsamples = nq (ntheta does not enter). max_memory_gb / return_radial
+    as in solve_mode_table.
+    """
+    l = np.asarray(l, dtype=np.int64)
+    m = np.asarray(m, dtype=np.int64)
+    k = np.asarray(k, dtype=np.int64)
+    n = np.asarray(n, dtype=np.int64)
+    a = orbit.a
+    kappa = float(np.sqrt(1 - a**2))
+    omega = np.array([orbit.mode_frequency(int(mm), int(kk), int(nn))
+                      for mm, kk, nn in zip(m, k, n)])
+    if np.any(omega == 0):
+        raise ValueError("static (omega = 0) modes must go through the CPU "
+                         "path; drop them from the table")
+
+    if subdomains is None:
+        smin = sigma_r(orbit.radial_roots[0], kappa)
+        smax = sigma_r(orbit.radial_roots[1], kappa)
+        subs_up = generate_subdomain_list([0, smax], ndomains, spacing)
+        subs_in = generate_subdomain_list([1, smin], ndomains, spacing)
+    else:
+        subs_up, subs_in = subdomains
+
+    # table-global spheroidal truncation, pinned across chunks (see
+    # solve_mode_table)
+    g = a * omega
+    lmin_all = np.maximum(abs(s), np.abs(m))
+    nmax = int(np.max((l - lmin_all) + np.round(20 + 2 * np.abs(g)) + 2))
+
+    samples = generic_samples(orbit, nsamples=nsamples, ntheta=ntheta)
+
+    def solve_chunk(idx):
+        lam, coupling, lmin = spheroidal_eigs_batched(s, l[idx], m[idx],
+                                                      g[idx], nmax=nmax)
+        lam = np.asarray(lam)
+        hom = solve_homogeneous_batch(s, kappa, lam, m[idx] * a, omega[idx],
+                                      subs_up, subs_in, n=nnodes)
+        S, dS, d2S = polar_swsh_values(s, m[idx], lmin,
+                                       np.asarray(coupling), lam, g[idx],
+                                       samples.thp)
+        src = integrate_source_generic_batch(samples, lam, m[idx], k[idx],
+                                             n[idx], omega[idx], S, dS, d2S,
+                                             hom, subs_up, subs_in,
+                                             method=method)
+        return lam, np.asarray(coupling), lmin, hom, src
+
+    B = len(l)
+    csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1, nnodes)
+    if csize is None or csize >= B:
+        lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
+        amplitudes, errors = src.amplitudes, src.errors
+        if not return_radial:
+            hom = None
+    else:
+        lams, coups, lmins, homs, amps, errs = [], [], [], [], [], []
+        for start in range(0, B, csize):
+            idx = np.arange(start, min(start + csize, B))
+            keep = len(idx)
+            if keep < csize:  # pad so every chunk reuses one compiled trace
+                idx = np.concatenate([idx, np.full(csize - keep, idx[-1])])
+            lam_c, coup_c, lmin_c, hom_c, src_c = solve_chunk(idx)
+            lams.append(lam_c[:keep])
+            coups.append(coup_c[:keep])
+            lmins.append(lmin_c[:keep])
+            amps.append(np.asarray(src_c.amplitudes)[:keep])
+            errs.append(np.asarray(src_c.errors)[:keep])
+            if return_radial:
+                homs.append(HomogeneousBatch(*(np.asarray(x)[:keep]
+                                               for x in hom_c)))
+        lam = np.concatenate(lams)
+        coupling = np.concatenate(coups)
+        lmin = np.concatenate(lmins)
+        amplitudes = np.concatenate(amps)
+        errors = np.concatenate(errs)
+        hom = (HomogeneousBatch(*(np.concatenate([h[i] for h in homs])
+                                  for i in range(len(HomogeneousBatch._fields))))
+               if return_radial else None)
+
+    return GenericModeSolution(l, m, k, n, omega, lam, np.asarray(coupling),
+                               lmin, hom, np.asarray(subs_up),
+                               np.asarray(subs_in), amplitudes, errors)
