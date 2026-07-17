@@ -7,14 +7,29 @@ from ..swsh import sphericalY_expansion
 from .chebyshev import evaluate_multidomain
 
 
-def swsh_theta_values(s, m_arr, lmin_arr, coeffs, th, deriv=0):
+def swsh_theta_values(s, m_arr, lmin_arr, coeffs, th, deriv=0,
+                      eigenvalues=None, gamma=None):
     """Batched S_{lmn}(theta) on a shared theta grid -> (B, ntheta).
 
     Y-basis rows are built on host per unique (m, lmin) (heavy special
     functions stay on CPU, GPU plan §2.2); the batched contraction
-    coeffs @ basis runs on device.
+    coeffs @ basis runs on device. deriv=2 uses the angular-ODE identity
+    (swsh.deriv2) and requires eigenvalues and gamma = a*omega, both (B,).
     """
     from ..swsh import sphericalY_expansion_deriv
+    if deriv == 2:
+        if eigenvalues is None or gamma is None:
+            raise ValueError("deriv=2 requires eigenvalues and gamma")
+        S = swsh_theta_values(s, m_arr, lmin_arr, coeffs, th)
+        dS = swsh_theta_values(s, m_arr, lmin_arr, coeffs, th, deriv=1)
+        thb = jnp.asarray(np.atleast_1d(th))[None, :]
+        m = jnp.asarray(np.asarray(m_arr, dtype=np.float64))[:, None]
+        g = jnp.asarray(np.asarray(gamma, dtype=np.float64))[:, None]
+        lam = jnp.asarray(np.asarray(eigenvalues, dtype=np.float64))[:, None]
+        sth, cth = jnp.sin(thb), jnp.cos(thb)
+        gth = (-g**2 * sth**2 - (m + s * cth)**2 / sth**2 - 2 * s * g * cth
+               + s + 2 * m * g + lam)
+        return -(cth / sth) * dS - gth * S
     coeffs = np.asarray(coeffs)
     B, nterms = coeffs.shape
     z = np.cos(np.atleast_1d(th))

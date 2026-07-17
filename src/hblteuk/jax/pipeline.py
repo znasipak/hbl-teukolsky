@@ -9,7 +9,9 @@ import numpy as np
 from ..collocode import generate_subdomain_list
 from ..teuk import sigma_r
 from ..utils import chop_matrix
-from .source import equatorial_swsh_values, integrate_source_batch, orbit_samples
+from .source import (equatorial_swsh_values, integrate_source_batch,
+                     integrate_source_spherical_batch, orbit_samples,
+                     polar_samples, polar_swsh_values)
 from .swsh import spheroidal_eigs_batched
 from .teukolsky import HomogeneousBatch, solve_homogeneous_batch
 
@@ -151,6 +153,68 @@ def _negative_m_coupling(coupling, l, lmin):
     if np.abs(l + lmin) % 2 == 0:
         out *= -1
     return out
+
+
+class SphericalModeSolution(NamedTuple):
+    l: np.ndarray            # (B,)
+    m: np.ndarray
+    k: np.ndarray
+    omega: np.ndarray
+    eigenvalues: np.ndarray
+    coupling: np.ndarray     # (B, nterms) spherical-expansion coefficients
+    lmin: np.ndarray
+    hom: object              # HomogeneousBatch
+    subdomains_up: np.ndarray
+    subdomains_in: np.ndarray
+    amplitudes: jax.Array    # (B, 2) [In, Up]
+    errors: jax.Array        # (B, 2)
+
+
+def solve_spherical_mode_table(orbit, s, l, m, k, subdomains=None,
+                               ndomains=150, nnodes=32, spacing="arcsinh7",
+                               nsamples=2**8, method="fft"):
+    """Solve a radiative (s = -2) spherical-inclined mode table end to end.
+
+    orbit: MiniGeo with e = 0 (any |x| <= 1). l, m, k: (B,) integers;
+    omega = m*Omega_phi + k*Omega_theta must be nonzero for every mode.
+    The radial stage collapses to the single orbital radius; the source is
+    the k-th Fourier coefficient over the polar period (dev/PHASE5B.md).
+    """
+    if orbit.e != 0:
+        raise ValueError("solve_spherical_mode_table requires e = 0; "
+                         "eccentric-equatorial tables use solve_mode_table")
+    l = np.asarray(l, dtype=np.int64)
+    m = np.asarray(m, dtype=np.int64)
+    k = np.asarray(k, dtype=np.int64)
+    a = orbit.a
+    kappa = float(np.sqrt(1 - a**2))
+    omega = np.array([orbit.mode_frequency(int(mm), int(kk), 0)
+                      for mm, kk in zip(m, k)])
+    if np.any(omega == 0):
+        raise ValueError("static (omega = 0) modes must go through the CPU "
+                         "path; drop them from the table")
+
+    sp = sigma_r(float(orbit.radial_roots[0]), kappa)
+    if subdomains is None:
+        subs_up = generate_subdomain_list([0, sp], ndomains, spacing)
+        subs_in = generate_subdomain_list([1, sp], ndomains, spacing)
+    else:
+        subs_up, subs_in = subdomains
+
+    lam, coupling, lmin = spheroidal_eigs_batched(s, l, m, a * omega)
+    lam = np.asarray(lam)
+    hom = solve_homogeneous_batch(s, kappa, lam, m * a, omega,
+                                  subs_up, subs_in, n=nnodes)
+    samples = polar_samples(orbit, nsamples=nsamples)
+    S, dS, d2S = polar_swsh_values(s, m, lmin, np.asarray(coupling), lam,
+                                   a * omega, samples.thp)
+    src = integrate_source_spherical_batch(samples, lam, m, k, omega,
+                                           S, dS, d2S, hom, subs_up, subs_in,
+                                           method=method)
+    return SphericalModeSolution(l, m, k, omega, lam, np.asarray(coupling),
+                                 lmin, hom, np.asarray(subs_up),
+                                 np.asarray(subs_in),
+                                 src.amplitudes, src.errors)
 
 
 def solve_circular_grid(orbit, s, lrange, cpu_grid_generator,

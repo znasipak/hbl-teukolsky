@@ -19,6 +19,11 @@ ORBITS = {
              [(2, 2, 0), (2, 1, 0), (3, 3, 0), (5, 4, 0)]),
 }
 
+# spherical-inclined table (e = 0, |x| < 1): k-modes, n = 0. Column 2 is k.
+SPH_ORBIT = (0.9, 10.0, 0.0, 0.5)
+SPH_MODES = ([(2, 2, k) for k in range(-2, 3)]
+             + [(2, 1, 1), (3, 3, 1), (3, 1, -2), (4, -3, 1), (5, 4, 2)])
+
 
 def main():
     data = {}
@@ -37,6 +42,22 @@ def main():
             print(f"{tag} ({l},{m},{n}): Edot_inf = {fx.Edot['I']:.6e}")
         data[f"{tag}_params"] = np.array(params)
         data[f"{tag}_table"] = np.array(rows)
+
+    geo = KerrGeodesic(*SPH_ORBIT, nsamples=2**9)
+    rows = []
+    for (l, m, k) in SPH_MODES:
+        tm = TeukolskyMode(-2, l, m, k, 0, geo)
+        tm.solve(geo)
+        fx = FluxMode(geo, tm)
+        zin, zup = tm.amplitude("In"), tm.amplitude("Up")
+        rows.append([l, m, k, tm.frequency, tm.eigenvalue,
+                     zin.real, zin.imag, zup.real, zup.imag,
+                     fx.Edot["I"], fx.Edot["H"],
+                     fx.Ldot["I"], fx.Ldot["H"]])
+        print(f"sph ({l},{m},{k}): |Zup| = {abs(zup):.6e}, Edot_inf = {fx.Edot['I']:.6e}")
+    data["sph_params"] = np.array(SPH_ORBIT)
+    data["sph_table"] = np.array(rows)
+
     np.savez_compressed(OUT, **data)
     print(f"wrote {OUT} ({OUT.stat().st_size/1024:.0f} kB)")
 
