@@ -58,8 +58,10 @@ def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
     subdomains: optional (subs_up, subs_in) pair (e.g. from the CPU grid
     generator's optimize()); defaults to `spacing`-spaced structures.
     max_memory_gb bounds the device working set by solving the table in
-    equal-shape mode chunks -- identical results to machine precision
-    (dev/MEMORY_CHUNKING_DESIGN.md); None disables chunking.
+    equal-shape mode chunks -- mathematically identical results to the
+    unchunked path (rtol ~1e-8; JAX's batched linear algebra is not
+    bit-reproducible across batch sizes, dev/MEMORY_CHUNKING_DESIGN.md);
+    None disables chunking.
     return_radial=False drops the homogeneous-solution coefficients
     (hom=None) to bound output memory in flux-only workflows.
     """

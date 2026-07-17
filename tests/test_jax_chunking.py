@@ -1,5 +1,5 @@
-# Memory-bounded chunking of solve_mode_table: chunked results must equal
-# the unchunked path to machine precision. See dev/MEMORY_CHUNKING_DESIGN.md.
+# Memory-bounded chunking of solve_mode_table: chunked results must be
+# mathematically equal to the unchunked path. See dev/MEMORY_CHUNKING_DESIGN.md.
 import numpy as np
 import pytest
 
