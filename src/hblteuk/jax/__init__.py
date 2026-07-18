@@ -30,6 +30,7 @@ from .pipeline import (solve_mode_table, solve_circular_grid, ModeTableSolution,
                        solve_spherical_mode_table, SphericalModeSolution,
                        solve_generic_mode_table, GenericModeSolution)
 from .fluxes import flux_modes, horizon_constant, FluxModes
+from .driver import solve_modes, sum_fluxes, total_fluxes, FluxSummary
 
 __all__ = ["spheroidal_eigs_batched", "sphericalY_basis_matrix",
            "evaluate_multidomain", "solve_homogeneous_batch",
@@ -42,4 +43,5 @@ __all__ = ["spheroidal_eigs_batched", "sphericalY_basis_matrix",
            "integrate_source_spherical_batch", "solve_spherical_mode_table",
            "SphericalModeSolution", "generic_samples", "GenericSamples",
            "integrate_source_generic_batch", "solve_generic_mode_table",
-           "GenericModeSolution"]
+           "GenericModeSolution", "solve_modes", "sum_fluxes",
+           "total_fluxes", "FluxSummary"]
