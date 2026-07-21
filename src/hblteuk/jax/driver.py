@@ -74,7 +74,7 @@ class FluxSummary(NamedTuple):
 _CHANNELS = ("Edot", "Ldot", "Qdot")
 
 
-def sum_fluxes(sol, orbit, tol=None):
+def sum_fluxes(sol, orbit, tol=None, peak_edges=False):
     """Doubled flux totals + truncation diagnostics for a canonical-half
     mode table (m > 0, or m = 0 & k > 0, or m = 0 & k = 0 & n > 0; each
     row counts twice via the (m,k,n) -> (-m,-k,-n) conjugation symmetry).
@@ -104,14 +104,25 @@ def sum_fluxes(sol, orbit, tol=None):
          for c in _CHANNELS])
 
     edge_report = {}
-    for axis, v in (("l", l), ("k", k), ("n", n)):
-        if v.max() == v.min():
-            continue                      # degenerate axis: no window edge
-        # l is summed from |s| upward and only truncated at the top, so its
-        # edge is the highest-l slab alone; k, n are centered on 0 and
+    if peak_edges:
+        # peak strategy knobs: the l extent (top slab, like box), and the
+        # k/n band offsets from their (l,m)-peaks (dk, dn). Each edge is the
+        # outermost shell of that knob.
+        koff = np.array([_k_offset(ll, mm, kk)
+                         for ll, mm, kk in zip(l, m, k)])
+        noff = np.array([_n_offset(orbit.e, mm, nn)
+                         for mm, nn in zip(m, n)])
+        axes = (("l", l), ("dk", koff), ("dn", noff))
+    else:
+        # box: l is summed from |s| upward and only truncated at the top, so
+        # its edge is the highest-l slab alone; k, n are centered on 0 and
         # truncated at both ends, so both extremes count
-        if axis == "l":
-            edge = v == v.max()
+        axes = (("l", l), ("k", k), ("n", n))
+    for axis, v in axes:
+        if v.max() == v.min():
+            continue                      # degenerate/zero-spread axis
+        if peak_edges or axis == "l":
+            edge = v == v.max()           # outermost shell
         else:
             edge = (v == v.max()) | (v == v.min())
         edge_report[axis] = np.array(
@@ -144,6 +155,65 @@ def _window_modes(lmax, k_half, n_half):
             or (m == 0 and k == 0 and n > 0)]
 
 
+# Spectral-peak model, read at FIXED (l, m): for a given (l, m) the flux
+# concentrates at the polar mode k where |m+k| = l (k = l-m or k = -(l+m))
+# and at the radial modes |n| ~ round(m / (1-e)^1.5) (from the empirical
+# ridge m = round(|n|(1-e)^1.5)). At high eccentricity (1-e)^1.5 is small so
+# the peak |n| departs sharply from 0 -- exactly where box wastes the most
+# modes. The formula only needs to land NEAR the peak: a symmetric band of
+# half-width dn around +-n_peak tests both sides so the adaptive check can
+# see the fall-off (or keep growing toward the true peak). n = 0 is NOT
+# forced in -- at high e it may not matter. Iterating (l, m) naturally
+# (m in [0, l], as box does) and banding only k, n around these
+# (l,m)-centers prunes the two expensive axes. dev/PHASE5E.md.
+
+def _k_peaks(l, m):
+    return (l - m, -(l + m))
+
+
+def _n_peak_mag(e, m):
+    return int(round(m / (1 - e) ** 1.5)) if e < 1 else 0
+
+
+def _k_offset(l, m, k):
+    # distance to the nearer k-peak center at this (l, m)
+    a, b = _k_peaks(l, m)
+    return min(abs(k - a), abs(k - b))
+
+
+def _n_offset(e, m, n):
+    # distance to the nearer +-n-peak center for this m
+    p = _n_peak_mag(e, m)
+    return min(abs(n - p), abs(n + p))
+
+
+def _peak_window_modes(orbit, lmax, dk, dn):
+    # canonical (l, m, k, n) with l in [2, lmax], m in [0, l], and k, n
+    # banded (half-widths dk, dn) around their (l, m)-peaks. Degenerate
+    # orbits collapse the banded axis: equatorial (|x| = 1) -> k = 0 only;
+    # circular (e = 0) -> n = 0 only.
+    e = orbit.e
+    equatorial = abs(orbit.x) == 1
+    circular = e == 0
+    out = set()
+    for l in range(2, lmax + 1):
+        for m in range(0, l + 1):
+            k_centers = (0,) if equatorial else _k_peaks(l, m)
+            p = _n_peak_mag(e, m)
+            n_centers = (0,) if circular else (p, -p)
+            for kc in k_centers:
+                krange = (0,) if equatorial else range(kc - dk, kc + dk + 1)
+                for k in krange:
+                    for nc in n_centers:
+                        nrange = (0,) if circular \
+                            else range(nc - dn, nc + dn + 1)
+                        for n in nrange:
+                            if (m > 0) or (m == 0 and k > 0) \
+                                    or (m == 0 and k == 0 and n > 0):
+                                out.add((l, m, k, n))
+    return sorted(out)
+
+
 class _Accum:
     # accumulated mode set across rounds; the minimal solution-shaped view
     # sum_fluxes needs (l/m/k/n/omega/eigenvalues/amplitudes/errors)
@@ -170,7 +240,24 @@ class _Accum:
 
 
 def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
-                 verbose=False):
+                 strategy="box", verbose=False):
+    """Adaptive staged-round flux driver. strategy="box" grows a full
+    rectangular canonical (l, m, k, n) window; strategy="peak" grows four
+    knobs (k_ext, n_ext, dm, dl) around the spectral ridges l ~ |m+k| and
+    m ~ round(|n|(1-e)^1.5), solving far fewer modes on high-e generic
+    orbits (dev/PHASE5E.md). Both stop when every axis'/knob's edge
+    contribution < tol x total per channel, or lmax_cap (warns,
+    converged=False).
+    """
+    if strategy not in ("box", "peak"):
+        raise ValueError(f"strategy must be 'box' or 'peak', got {strategy!r}")
+    if strategy == "peak":
+        return _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb,
+                                  verbose)
+    return _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose)
+
+
+def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose):
     """Adaptive staged-round flux driver: grows a rectangular canonical
     (l, m, k, n) window in batched rounds until every axis' edge
     contribution < tol x running total per channel (l axis: last two
@@ -232,3 +319,119 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
             k_half *= 2
         if not n_done:
             n_half *= 2
+
+
+def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose):
+    # iterate (l, m) naturally to lmax; band k, n around their (l, m)-peaks
+    # with half-widths dk, dn. Three adaptive knobs. l uses the box two-slab
+    # rule; dk/dn grow while their outermost offset shell contributes > tol.
+    lmax = 4
+    dk = 2
+    dn = 4
+    acc = _Accum()
+    rounds = []
+
+    while True:
+        new = [md for md in _peak_window_modes(orbit, lmax, dk, dn)
+               if md not in acc.solved]
+        if new:
+            arr = np.array(new)
+            sol = solve_modes(
+                orbit, s, arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3],
+                nsamples=max(2**9, _next_pow2(4 * dn)),
+                ntheta=max(2**7, _next_pow2(4 * dk)),
+                max_memory_gb=max_memory_gb, return_radial=False)
+            acc.merge(sol)
+        elif not rounds:
+            raise RuntimeError("empty initial peak window")
+        summary = sum_fluxes(acc, orbit, tol=tol, peak_edges=True)
+        rounds.append(dict(window=(lmax, dk, dn), n_new=len(new),
+                           totals={c: getattr(summary, c) for c in _CHANNELS}))
+        if verbose:
+            print(f"round {len(rounds)}: lmax={lmax}, dk={dk}, dn={dn}, "
+                  f"+{len(new)} modes ({len(acc.l)} total), "
+                  f"Edot_inf={summary.Edot[0]:.6e}")
+
+        # per-knob outer-two-shell stop: a knob is done when its two
+        # outermost shells each carry < tol x total for every channel.
+        koff = np.array([_k_offset(ll, mm, kk)
+                         for ll, mm, kk in zip(acc.l, acc.m, acc.k)])
+        noff = np.array([_n_offset(orbit.e, mm, nn)
+                         for mm, nn in zip(acc.m, acc.n)])
+        shells = dict(l=acc.l, dk=koff, dn=noff)
+
+        def shell_frac(vals, level):
+            sel = vals == level
+            if not sel.any():
+                return 0.0
+            return max(np.abs(summary.table[c][sel]).sum()
+                       / max(np.abs(summary.table[c]).sum(), 1e-300)
+                       for c in _CHANNELS)
+
+        def knob_status(name, top):
+            # (done, step): a knob is done when its two outermost shells each
+            # carry < tol x total. When not done, the step scales with how
+            # far the boundary/volume ratio exceeds tol -- less-converged
+            # directions (more boundary power) expand more, so the box grows
+            # non-uniformly toward whichever edges still hold flux. The step
+            # is bounded to [1, 2] shells: dk and dn multiply, so larger
+            # simultaneous steps blow the mode count up geometrically (a tiny
+            # initial box is all-boundary, edge fraction ~ 1, and would
+            # otherwise trigger a max jump on every axis at once).
+            v = shells[name]
+            if v.max() == v.min():       # degenerate/collapsed knob
+                return True, 0
+            f, f2 = shell_frac(v, top), shell_frac(v, top - 1)
+            if f < tol and f2 < tol:
+                return True, 0
+            step = 2 if max(f, f2) > 10 * tol else 1
+            return False, step
+
+        l_done, l_step = knob_status("l", lmax)
+        dk_done, dk_step = knob_status("dk", dk)
+        dn_done, dn_step = knob_status("dn", dn)
+
+        if l_done and dk_done and dn_done:
+            return summary._replace(rounds=tuple(rounds))
+        if not l_done and lmax >= lmax_cap:
+            warnings.warn(f"total_fluxes hit lmax_cap={lmax_cap} before "
+                          "converging; results are truncated", UserWarning)
+            conv = {c: False for c in _CHANNELS}
+            return summary._replace(converged=conv, rounds=tuple(rounds))
+        # grow only the un-converged knobs, each by its own proportional step
+        if not l_done:
+            lmax = min(lmax + l_step, lmax_cap)
+        if not dk_done:
+            dk += dk_step
+        if not dn_done:
+            dn += dn_step
+
+
+def flux_efficiency(summary, tol):
+    """How many solved modes are actually required to reach `tol`, per
+    channel. Magnitude-tail definition: for each channel/side, sort modes
+    by |contribution| descending and count the smallest prefix whose
+    omitted tail (sum of remaining magnitudes) < tol x |total|. The tail
+    magnitude bounds the truncated-sum error, so this is a sound
+    "modes that matter" count even with L/Q sign cancellation.
+    efficiency = binding required count / n_solved (1 = no waste).
+    """
+    N = len(summary.table["l"])
+    n_required = {}
+    for c in _CHANNELS:
+        counts = []
+        for side in (0, 1):
+            total = abs(getattr(summary, c)[side])
+            if total == 0:
+                counts.append(0)
+                continue
+            contrib = np.sort(np.abs(summary.table[c][:, side]))[::-1]
+            # tail[i] = sum of contrib[i:]; find smallest k with tail[k] < thr
+            tail = np.concatenate([np.cumsum(contrib[::-1])[::-1], [0.0]])
+            k = int(np.searchsorted(-tail, -tol * total))
+            counts.append(min(k, N))
+        n_required[c] = (counts[0], counts[1])
+    per_channel = {c: max(n_required[c]) / max(N, 1) for c in _CHANNELS}
+    efficiency = max(per_channel.values()) if N else 0.0
+    return dict(n_solved=N, n_required=n_required,
+                efficiency=efficiency, per_channel_efficiency=per_channel)

@@ -175,3 +175,121 @@ def test_total_fluxes_cap_warns(orb_ecc_eq):
     with pytest.warns(UserWarning, match="lmax_cap"):
         got = total_fluxes(orb_ecc_eq, tol=1e-12, lmax_cap=4)
     assert not all(got.converged.values())
+
+
+from hblteuk.jax.driver import (_peak_window_modes, _k_peaks, _n_peak_mag,
+                                _k_offset, _n_offset)
+
+
+def test_peak_centers_formulas():
+    # k peaks where |m+k| = l; |n| peaks at round(m / (1-e)^1.5)
+    assert _k_peaks(5, 2) == (3, -7)                # l-m, -(l+m)
+    assert _n_peak_mag(0.0, 5) == 5                 # (1-0)^1.5 = 1
+    assert _n_peak_mag(0.3, 4) == round(4 / 0.7 ** 1.5)
+    assert _k_offset(5, 2, 3) == 0                  # exactly on l-m peak
+    assert _n_offset(0.0, 5, -5) == 0               # on the -n peak
+
+
+def test_peak_window_canonical_and_centered(orb_gen):
+    modes = _peak_window_modes(orb_gen, lmax=6, dk=2, dn=2)
+    assert len(modes) == len(set(modes))            # deduplicated
+    for (l, m, k, n) in modes:
+        # canonical half only
+        assert (m > 0) or (m == 0 and k > 0) or (m == 0 and k == 0 and n > 0)
+        assert 2 <= l <= 6 and 0 <= m <= l          # natural (l, m)
+        assert _k_offset(l, m, k) <= 2              # inside k band
+        assert _n_offset(orb_gen.e, m, n) <= 2      # inside n band
+
+
+def test_peak_window_degenerate_collapse():
+    from hblteuk.geo import MiniGeo
+    eq = MiniGeo(0.9, 10.0, 0.2, 1.0)               # equatorial: no k
+    modes = _peak_window_modes(eq, lmax=6, dk=2, dn=2)
+    assert all(k == 0 for (l, m, k, n) in modes)
+    circ = MiniGeo(0.9, 10.0, 0.0, 0.5)             # circular: no n
+    modes = _peak_window_modes(circ, lmax=6, dk=2, dn=2)
+    assert all(n == 0 for (l, m, k, n) in modes)
+
+
+def test_sum_fluxes_peak_edges(orb_gen):
+    modes = _peak_window_modes(orb_gen, lmax=5, dk=3, dn=3)
+    arr = np.array(modes)
+    sol = solve_modes(orb_gen, -2, arr[:, 0], arr[:, 1], arr[:, 2],
+                      arr[:, 3], nsamples=2**8, ntheta=2**6)
+    got = sum_fluxes(sol, orb_gen, tol=1e-1, peak_edges=True)
+    assert set(got.edge_report) <= {"l", "dk", "dn"}
+    assert {"dk", "dn"} <= set(got.edge_report)      # both bands have spread
+    for frac in got.edge_report.values():
+        assert frac.shape == (3,) and np.all(frac >= 0)
+    # box edge_report (default) is unaffected
+    box = sum_fluxes(sol, orb_gen, tol=1e-1)
+    assert "l" in box.edge_report
+
+
+def test_total_fluxes_peak_matches_box_ecc(orb_ecc_eq):
+    box = total_fluxes(orb_ecc_eq, tol=1e-5, strategy="box")
+    peak = total_fluxes(orb_ecc_eq, tol=1e-5, strategy="peak")
+    np.testing.assert_allclose(peak.Edot, box.Edot, rtol=5e-5)
+    np.testing.assert_allclose(peak.Ldot, box.Ldot, rtol=5e-5)
+
+
+def test_total_fluxes_peak_matches_box_sph(orb_sph):
+    box = total_fluxes(orb_sph, tol=1e-5, strategy="box")
+    peak = total_fluxes(orb_sph, tol=1e-5, strategy="peak")
+    np.testing.assert_allclose(peak.Edot, box.Edot, rtol=5e-5)
+    np.testing.assert_allclose(peak.Qdot, box.Qdot, rtol=5e-4)
+
+
+def test_total_fluxes_peak_matches_box_generic(orb_gen):
+    # correctness on the 2D case (coarse tol to bound runtime)
+    box = total_fluxes(orb_gen, tol=1e-4, strategy="box")
+    peak = total_fluxes(orb_gen, tol=1e-4, strategy="peak")
+    np.testing.assert_allclose(peak.Edot, box.Edot, rtol=5e-4)
+    np.testing.assert_allclose(peak.Qdot, box.Qdot, rtol=5e-3)
+
+
+def test_peak_selection_prunes(orb_gen):
+    # the payoff: at matched extents the peak selector picks far fewer modes
+    # than the full box rectangle (ridge pruning; measured ~0.5x). Cheap,
+    # deterministic -- the adaptive per-orbit mode count is shown in the
+    # notebook, where the savings grow with eccentricity/inclination.
+    from hblteuk.jax.driver import _window_modes
+    box = _window_modes(10, 8, 10)
+    peak = _peak_window_modes(orb_gen, lmax=10, dk=3, dn=3)
+    assert len(peak) < 0.7 * len(box)
+
+
+def test_total_fluxes_peak_cap_warns(orb_ecc_eq):
+    with pytest.warns(UserWarning, match="lmax_cap"):
+        got = total_fluxes(orb_ecc_eq, tol=1e-12, lmax_cap=4, strategy="peak")
+    assert not all(got.converged.values())
+
+
+def test_total_fluxes_bad_strategy(orb_ecc_eq):
+    with pytest.raises(ValueError, match="strategy"):
+        total_fluxes(orb_ecc_eq, strategy="nope")
+
+
+from hblteuk.jax import flux_efficiency
+
+
+def test_flux_efficiency_basic(orb_ecc_eq):
+    got = total_fluxes(orb_ecc_eq, tol=1e-5, strategy="box")
+    eff = flux_efficiency(got, tol=1e-5)
+    N = len(got.table["l"])
+    assert eff["n_solved"] == N
+    for ch, (ci, ch_) in eff["n_required"].items():
+        assert 0 <= ci <= N and 0 <= ch_ <= N   # zero channels (eq Qdot) -> 0
+    assert eff["n_required"]["Edot"][0] > 0     # nonzero channel needs modes
+    assert 0 < eff["efficiency"] <= 1.0
+    assert set(eff["per_channel_efficiency"]) == {"Edot", "Ldot", "Qdot"}
+
+
+def test_flux_efficiency_required_set_reproduces_total(orb_ecc_eq):
+    got = total_fluxes(orb_ecc_eq, tol=1e-5, strategy="box")
+    eff = flux_efficiency(got, tol=1e-5)
+    contrib = np.abs(got.table["Edot"][:, 0])
+    order = np.argsort(contrib)[::-1]
+    ni = eff["n_required"]["Edot"][0]
+    kept = got.table["Edot"][order[:ni], 0].sum()
+    assert abs(kept - got.Edot[0]) <= 1e-5 * abs(got.Edot[0])
