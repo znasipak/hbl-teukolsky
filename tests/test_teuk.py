@@ -72,8 +72,12 @@ def test_homogeneous_vs_golden(orbit, teuk_solver, golden):
             sig = golden[f"hom{i}_sig_{tag}"]
             for d in (0, 1, 2):
                 got = hbl.psi[bc](sig, deriv=d)
+                want = golden[f"hom{i}_psi_{tag}_d{d}"]
+                # golden generated on a different BLAS/LAPACK build; the
+                # collocation linear solve is reproducible only to ~1e-8
+                # across platforms (see test_jax_teuk.py::test_vs_golden)
                 np.testing.assert_allclose(
-                    got, golden[f"hom{i}_psi_{tag}_d{d}"], rtol=1e-10,
+                    got, want, rtol=1e-7, atol=1e-8 * np.max(np.abs(want)),
                     err_msg=f"case {i} {bc} deriv={d}")
 
 
