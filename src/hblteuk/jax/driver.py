@@ -2,14 +2,16 @@
 # adaptive total-flux driver. Layered strictly on the per-geometry table
 # solvers and flux_modes -- no new physics. Design: dev/PHASE5D_DESIGN.md;
 # writeup: dev/PHASE5D.md.
+import math
 import warnings
 from typing import NamedTuple
 
 import numpy as np
 
 from .fluxes import flux_modes
-from .pipeline import (GenericModeSolution, solve_generic_mode_table,
-                       solve_mode_table, solve_spherical_mode_table)
+from .pipeline import (GenericModeSolution, _chunk_size,
+                       solve_generic_mode_table, solve_mode_table,
+                       solve_spherical_mode_table)
 
 
 def _as_generic(sol, k, n):
@@ -145,6 +147,94 @@ def _next_pow2(x):
     return 1 << max(0, int(np.ceil(np.log2(max(x, 1)))))
 
 
+def _decay_step(shell_sums, budget, cap=4):
+    """Decay-model step for one growth direction. shell_sums maps each
+    channel to its per-offset-level flux-magnitude sums S_0..S_edge; budget
+    maps each channel to its absolute allowance B_c. For each channel:
+    estimate the geometric decay r = S_edge/S_{edge-1}, the tail beyond the
+    edge = S_edge*r/(1-r), and the shells needed to drop that tail under B_c.
+    The direction is done when max(tail, S_edge) < B_c for every channel (the
+    S_edge term is the model-free safety gate). Returns (done, step) with the
+    step = min(max over channels of the predicted shells, cap), >=1 when not
+    done. (First pass uses the last-two-shell ratio; a log-linear fit over the
+    outer 2-3 shells is a later robustness refinement.)
+    """
+    done_all = True
+    step = 0
+    for c, S in shell_sums.items():
+        S = np.asarray(S, float)
+        B = budget[c]
+        edge = S[-1] if S.size else 0.0
+        if S.size < 2 or edge <= 0.0:
+            if edge < B:
+                continue
+            done_all = False
+            step = max(step, 1)
+            continue
+        prev = S[-2]
+        r = edge / prev if prev > 0 else np.inf
+        if not (0.0 < r < 1.0):            # not decaying -> unresolved
+            done_all = False
+            step = max(step, 1)
+            continue
+        tail = edge * r / (1.0 - r)
+        if max(tail, edge) < B:
+            continue
+        done_all = False
+        need = math.log(B * (1.0 - r) / edge) / math.log(r) - 1.0
+        step = max(step, int(math.ceil(need)) if need > 0 else 1)
+    return done_all, min(step, cap)
+
+
+# Fields sum_fluxes/_Accum.merge actually read off a solution; a bucketed
+# solve returns this trimmed view so the padding rows never leak downstream.
+class _SolView(NamedTuple):
+    l: np.ndarray
+    m: np.ndarray
+    k: np.ndarray
+    n: np.ndarray
+    omega: np.ndarray
+    eigenvalues: np.ndarray
+    amplitudes: np.ndarray
+    errors: np.ndarray
+
+
+def _want_bucket(bucket):
+    # "auto" (default): pad only on GPU, where XLA recompilation per distinct
+    # batch shape dominates small adaptive rounds (A100: ~10 s/round compile,
+    # trivial compute). On CPU compile is cheap and padding only wastes
+    # compute, so skip. True/False force the choice (True is for tests, to
+    # exercise the padded path on CPU).
+    if bucket in (True, False):
+        return bucket
+    import jax
+    return jax.default_backend() == "gpu"
+
+
+def _bucketed_solve(orbit, s, arr, nsamples, ntheta, max_memory_gb,
+                    pad, ndomains=150, nnodes=32):
+    """solve_modes with the batch padded to the pipeline chunk size so every
+    adaptive round reuses one compiled trace. Padding rows are duplicates of
+    real modes (kept valid) and are sliced off before return. csize is the
+    same bucket the chunked path already pads to (pipeline.py), so a padded
+    small round and a large chunked round share the identical XLA trace ->
+    one compile for the whole driver run instead of one per round.
+    """
+    B = len(arr)
+    kw = dict(nsamples=nsamples, ntheta=ntheta,
+              max_memory_gb=max_memory_gb, return_radial=False)
+    if pad:
+        csize = _chunk_size(max_memory_gb, nsamples, ndomains, nnodes)
+        if csize is not None and B < csize:
+            arr = arr[np.arange(csize) % B]      # first B rows == arr (csize>=B)
+    sol = solve_modes(orbit, s, arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3],
+                      **kw)
+    return _SolView(sol.l[:B], sol.m[:B], sol.k[:B], sol.n[:B],
+                    sol.omega[:B], sol.eigenvalues[:B],
+                    np.asarray(sol.amplitudes)[:B],
+                    np.asarray(sol.errors)[:B])
+
+
 def _window_modes(lmax, k_half, n_half):
     # canonical half of the rectangle l in [2, lmax], m in [0, l]
     return [(l, m, k, n) for l in range(2, lmax + 1)
@@ -240,7 +330,7 @@ class _Accum:
 
 
 def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
-                 strategy="box", verbose=False):
+                 strategy="box", verbose=False, bucket="auto"):
     """Adaptive staged-round flux driver. strategy="box" grows a full
     rectangular canonical (l, m, k, n) window; strategy="peak" grows four
     knobs (k_ext, n_ext, dm, dl) around the spectral ridges l ~ |m+k| and
@@ -248,16 +338,24 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     orbits (dev/PHASE5E.md). Both stop when every axis'/knob's edge
     contribution < tol x total per channel, or lmax_cap (warns,
     converged=False).
+
+    bucket="auto" pads each round's batch to the pipeline chunk size on GPU
+    (one shared XLA trace instead of a recompile per round; big win on small
+    adaptive runs where compile dominates) and is off on CPU; True/False
+    force it. Fluxes are bit-identical to the unpadded path either way.
     """
     if strategy not in ("box", "peak"):
         raise ValueError(f"strategy must be 'box' or 'peak', got {strategy!r}")
+    pad = _want_bucket(bucket)
     if strategy == "peak":
         return _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb,
-                                  verbose)
-    return _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose)
+                                  verbose, pad)
+    return _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
+                             pad)
 
 
-def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose):
+def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
+                      pad=False):
     """Adaptive staged-round flux driver: grows a rectangular canonical
     (l, m, k, n) window in batched rounds until every axis' edge
     contribution < tol x running total per channel (l axis: last two
@@ -276,11 +374,11 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose):
                if md not in acc.solved]
         if new:
             arr = np.array(new)
-            sol = solve_modes(
-                orbit, s, arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3],
+            sol = _bucketed_solve(
+                orbit, s, arr,
                 nsamples=max(2**9, _next_pow2(4 * n_half)),
                 ntheta=max(2**7, _next_pow2(4 * k_half)),
-                max_memory_gb=max_memory_gb, return_radial=False)
+                max_memory_gb=max_memory_gb, pad=pad)
             acc.merge(sol)
         elif not rounds:
             raise RuntimeError("empty initial window")
@@ -321,7 +419,8 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose):
             n_half *= 2
 
 
-def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose):
+def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
+                       pad=False):
     # iterate (l, m) naturally to lmax; band k, n around their (l, m)-peaks
     # with half-widths dk, dn. Three adaptive knobs. l uses the box two-slab
     # rule; dk/dn grow while their outermost offset shell contributes > tol.
@@ -336,11 +435,11 @@ def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose):
                if md not in acc.solved]
         if new:
             arr = np.array(new)
-            sol = solve_modes(
-                orbit, s, arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3],
+            sol = _bucketed_solve(
+                orbit, s, arr,
                 nsamples=max(2**9, _next_pow2(4 * dn)),
                 ntheta=max(2**7, _next_pow2(4 * dk)),
-                max_memory_gb=max_memory_gb, return_radial=False)
+                max_memory_gb=max_memory_gb, pad=pad)
             acc.merge(sol)
         elif not rounds:
             raise RuntimeError("empty initial peak window")

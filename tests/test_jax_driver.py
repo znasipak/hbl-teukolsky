@@ -293,3 +293,55 @@ def test_flux_efficiency_required_set_reproduces_total(orb_ecc_eq):
     ni = eff["n_required"]["Edot"][0]
     kept = got.table["Edot"][order[:ni], 0].sum()
     assert abs(kept - got.Edot[0]) <= 1e-5 * abs(got.Edot[0])
+
+
+@pytest.mark.parametrize("strategy", ["box", "peak"])
+def test_bucketing_matches_unpadded(orb_ecc_eq, strategy):
+    # bucket=True pads every round's batch to the chunk size (the GPU
+    # compile-amortization path); results must match the unpadded run to the
+    # batch-reproducibility floor, with identical mode count and round count.
+    off = total_fluxes(orb_ecc_eq, tol=1e-5, strategy=strategy, bucket=False)
+    on = total_fluxes(orb_ecc_eq, tol=1e-5, strategy=strategy, bucket=True)
+    for ch in ("Edot", "Ldot", "Qdot"):
+        np.testing.assert_allclose(getattr(on, ch), getattr(off, ch),
+                                   rtol=1e-7, atol=1e-30)
+    assert len(on.table["l"]) == len(off.table["l"])
+    assert len(on.rounds) == len(off.rounds)
+
+
+def test_bucketing_auto_off_on_cpu(orb_ecc_eq):
+    # "auto" must not pad on CPU (padding only helps GPU compile amortization
+    # and wastes CPU compute); assert it equals the explicit bucket=False path
+    from hblteuk.jax.driver import _want_bucket
+    assert _want_bucket("auto") is (jax.default_backend() == "gpu")
+    assert _want_bucket(False) is False and _want_bucket(True) is True
+
+
+# --- Phase 5F: gradient (decay-predicted) mode selection ---
+from hblteuk.jax.driver import _decay_step
+
+
+def test_decay_step_geometric_predicts_and_stops():
+    # exact geometric decay r=0.1: S_j = 100 * 0.1**j, edge=1.0
+    S = np.array([100.0, 10.0, 1.0])
+    # budget above the edge -> tail 0.111 and edge 1.0 both under 2.0 -> done
+    done, step = _decay_step({"Edot": S}, {"Edot": 2.0})
+    assert done and step == 0
+    # tighter budget 1e-3: tail 0.111 needs 3 more shells (1e-2 tail after 2,
+    # 1.1e-3 -> still >1e-3; 3rd shell brings tail to 1.1e-4 < 1e-3)
+    done, step = _decay_step({"Edot": S}, {"Edot": 1e-3})
+    assert not done and step == 3
+
+
+def test_decay_step_not_decaying_forces_growth():
+    S = np.array([1.0, 1.0, 2.0])             # r=2 (increasing) -> unresolved
+    done, step = _decay_step({"Edot": S}, {"Edot": 1e-6})
+    assert not done and step == 1
+
+
+def test_decay_step_cap_and_multichannel_binds_max():
+    Sfast = np.array([1.0, 1e-3])             # r=1e-3, converges fast
+    Sslow = np.array([1.0, 0.9])              # r=0.9, long tail
+    done, step = _decay_step({"Edot": Sfast, "Ldot": Sslow},
+                             {"Edot": 1e-9, "Ldot": 1e-9}, cap=3)
+    assert not done and step == 3             # slow channel binds, capped at 3
