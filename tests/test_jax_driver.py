@@ -399,3 +399,47 @@ def test_recenter_boundary_argmax_grows_not_moves():
     w_arr = np.array([9.0, 1.0, 1.0, 1.0])       # argmax at m=7 (band edge)
     new_c_m, grow = _recenter_m(l_arr, m_arr, w_arr, {10: 10}, dm=3)
     assert new_c_m[10] == 10 and grow is True
+
+
+def test_total_fluxes_gradient_matches_box_ecc(orb_ecc_eq):
+    box = total_fluxes(orb_ecc_eq, tol=1e-5, strategy="box")
+    grad = total_fluxes(orb_ecc_eq, tol=1e-5, strategy="gradient")
+    np.testing.assert_allclose(grad.Edot, box.Edot, rtol=5e-5)
+    np.testing.assert_allclose(grad.Ldot, box.Ldot, rtol=5e-5)
+
+
+def test_total_fluxes_gradient_matches_box_generic(orb_gen):
+    box = total_fluxes(orb_gen, tol=1e-4, strategy="box")
+    grad = total_fluxes(orb_gen, tol=1e-4, strategy="gradient")
+    np.testing.assert_allclose(grad.Edot, box.Edot, rtol=5e-4)
+    np.testing.assert_allclose(grad.Qdot, box.Qdot, rtol=5e-3)
+
+
+def test_total_fluxes_gradient_solves_fewer_than_peak(orb_gen):
+    # the payoff: gradient's non-uniform hull solves strictly fewer modes
+    # than peak at matched tol, while staying within tolerance (checked above)
+    peak = total_fluxes(orb_gen, tol=1e-4, strategy="peak")
+    grad = total_fluxes(orb_gen, tol=1e-4, strategy="gradient")
+    assert len(grad.table["l"]) < len(peak.table["l"])
+
+
+def test_total_fluxes_gradient_degenerate(orb_ecc_eq, orb_sph):
+    # equatorial: no k modes solved; spherical: no n modes solved
+    g_eq = total_fluxes(orb_ecc_eq, tol=1e-4, strategy="gradient")
+    assert set(np.unique(g_eq.table["k"])) == {0}
+    g_sph = total_fluxes(orb_sph, tol=1e-4, strategy="gradient")
+    assert set(np.unique(g_sph.table["n"])) == {0}
+
+
+def test_decay_step_safety_gate_blocks_early_stop():
+    # ratio looks finished (edge tiny vs prev -> predicted tail tiny) BUT the
+    # edge shell itself still exceeds budget -> must NOT stop: the model-free
+    # max(tail, S_edge) gate fires.
+    S = np.array([1000.0, 0.5])              # r=5e-4, tail~2.5e-4, edge=0.5
+    done, step = _decay_step({"Edot": S}, {"Edot": 0.1})
+    assert not done and step >= 1
+
+
+def test_total_fluxes_gradient_bad_strategy_message(orb_ecc_eq):
+    with pytest.raises(ValueError, match="gradient"):
+        total_fluxes(orb_ecc_eq, strategy="nope")

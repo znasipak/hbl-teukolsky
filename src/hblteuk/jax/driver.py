@@ -413,9 +413,13 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     adaptive runs where compile dominates) and is off on CPU; True/False
     force it. Fluxes are bit-identical to the unpadded path either way.
     """
-    if strategy not in ("box", "peak"):
-        raise ValueError(f"strategy must be 'box' or 'peak', got {strategy!r}")
+    if strategy not in ("box", "peak", "gradient"):
+        raise ValueError(
+            f"strategy must be 'box', 'peak', or 'gradient', got {strategy!r}")
     pad = _want_bucket(bucket)
+    if strategy == "gradient":
+        return _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb,
+                                      verbose, pad)
     if strategy == "peak":
         return _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb,
                                   verbose, pad)
@@ -573,6 +577,108 @@ def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
             dk += dk_step
         if not dn_done:
             dn += dn_step
+
+
+def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
+                           pad=False):
+    """Decay-predicted adaptive driver. Grows four directions (L, M, K, N),
+    each to the extent its estimated geometric flux tail needs to fall under
+    tol/n_dir of the per-channel total; stops on max(predicted_tail,
+    measured_edge) < budget per direction per channel. m-center is data-driven
+    (seed l=m, recenter on the accumulated per-m argmax). See dev/PHASE5F.md.
+    """
+    equatorial = abs(orbit.x) == 1
+    circular = orbit.e == 0
+    lmax = 4
+    dm, dk, dn = 2, (0 if equatorial else 2), (0 if circular else 4)
+    c_m = _m_center_seed(orbit, lmax)
+    acc = _Accum()
+    rounds = []
+
+    while True:
+        # extend c_m to any new l slabs before building the window
+        for l in range(2, lmax + 1):
+            c_m.setdefault(l, l)
+        new = [md for md in _gradient_window_modes(orbit, lmax, c_m, dm, dk, dn)
+               if md not in acc.solved]
+        if new:
+            arr = np.array(new)
+            sol = _bucketed_solve(
+                orbit, s, arr,
+                nsamples=max(2**9, _next_pow2(4 * max(dn, 1))),
+                ntheta=max(2**7, _next_pow2(4 * max(dk, 1))),
+                max_memory_gb=max_memory_gb, pad=pad)
+            acc.merge(sol)
+        elif not rounds:
+            raise RuntimeError("empty initial gradient window")
+        summary = sum_fluxes(acc, orbit, tol=tol)
+
+        # {channel: array indexed by offset level} of flux-magnitude sums
+        def shell_sums(levels):
+            levels = np.asarray(levels)
+            maxlev = int(levels.max()) if levels.size else 0
+            out = {}
+            for c in _CHANNELS:
+                mag = np.abs(summary.table[c]).sum(axis=1)   # both flux sides
+                arr = np.zeros(maxlev + 1)
+                for lev in range(maxlev + 1):
+                    arr[lev] = mag[levels == lev].sum()
+                out[c] = arr
+            return out
+
+        # per-mode weight (channel magnitudes, both sides) for the m-recenter
+        w = sum(np.abs(summary.table[c]).sum(axis=1) for c in _CHANNELS)
+        c_m, m_grow = _recenter_m(acc.l, acc.m, w, c_m, dm)
+
+        n_dir = 2 + (0 if equatorial else 1) + (0 if circular else 1)
+        budget = {c: (tol / n_dir) * max(np.abs(summary.table[c]).sum(), 1e-300)
+                  for c in _CHANNELS}
+
+        # step cap 2 (not the _decay_step default): the four directions
+        # multiply, so a coarse early round -- all-boundary, decay predicts a
+        # big jump -- would otherwise take a large step on every axis at once
+        # and overshoot the minimal hull (Phase 5E lesson; peak bounds to [1,2]
+        # for the same reason). Bound the per-round step; re-measure corrects.
+        CAP = 2
+        l_done, l_step = _decay_step(shell_sums(acc.l), budget, cap=CAP)
+        m_done, m_step = _decay_step(shell_sums(np.array(
+            [_m_offset(ll, mm, c_m.get(int(ll), int(ll)))
+             for ll, mm in zip(acc.l, acc.m)])), budget, cap=CAP)
+        if equatorial:
+            k_done, k_step = True, 0
+        else:
+            k_done, k_step = _decay_step(shell_sums(np.array(
+                [_k_offset(ll, mm, kk)
+                 for ll, mm, kk in zip(acc.l, acc.m, acc.k)])), budget, cap=CAP)
+        if circular:
+            n_done, n_step = True, 0
+        else:
+            n_done, n_step = _decay_step(shell_sums(np.array(
+                [_n_offset(orbit.e, mm, nn)
+                 for mm, nn in zip(acc.m, acc.n)])), budget, cap=CAP)
+
+        rounds.append(dict(window=(lmax, dm, dk, dn), n_new=len(new),
+                           totals={c: getattr(summary, c) for c in _CHANNELS}))
+        if verbose:
+            print(f"round {len(rounds)}: lmax={lmax} dm={dm} dk={dk} dn={dn}, "
+                  f"+{len(new)} modes ({len(acc.l)} total), "
+                  f"Edot_inf={summary.Edot[0]:.6e}")
+
+        if l_done and m_done and k_done and n_done and not m_grow:
+            return summary._replace(rounds=tuple(rounds))
+        if not l_done and lmax >= lmax_cap:
+            warnings.warn(f"total_fluxes hit lmax_cap={lmax_cap} before "
+                          "converging; results are truncated", UserWarning)
+            conv = {c: False for c in _CHANNELS}
+            return summary._replace(converged=conv, rounds=tuple(rounds))
+        if not l_done:
+            lmax = min(lmax + max(l_step, 1), lmax_cap)
+        if m_grow or not m_done:
+            dm += max(m_step, 1)
+        if not k_done:
+            dk += max(k_step, 1)
+        if not n_done:
+            dn += max(n_step, 1)
 
 
 def flux_efficiency(summary, tol):
