@@ -373,3 +373,29 @@ def test_gradient_window_low_l_covers_all_m(orb_gen):
     modes = _gradient_window_modes(orb_gen, 2, c_m, dm=5, dk=0, dn=0)
     ms = sorted({m for l, m, k, n in modes if l == 2})
     assert ms == [0, 1, 2]
+
+
+from hblteuk.jax.driver import _m_center_seed, _recenter_m
+
+
+def test_m_center_seed(orb_gen):
+    c_m = _m_center_seed(orb_gen, 6)
+    assert c_m == {2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+
+
+def test_recenter_interior_argmax_moves_center():
+    # l=10, current center 10, dm=3 (band 7..10). Peak weight at m=8 (interior)
+    l_arr = np.full(4, 10)
+    m_arr = np.array([7, 8, 9, 10])
+    w_arr = np.array([1.0, 9.0, 2.0, 1.0])       # argmax at m=8
+    new_c_m, grow = _recenter_m(l_arr, m_arr, w_arr, {10: 10}, dm=3)
+    assert new_c_m[10] == 8 and grow is False
+
+
+def test_recenter_boundary_argmax_grows_not_moves():
+    # peak sits on the lower band edge (m=7) -> band too narrow, grow
+    l_arr = np.full(4, 10)
+    m_arr = np.array([7, 8, 9, 10])
+    w_arr = np.array([9.0, 1.0, 1.0, 1.0])       # argmax at m=7 (band edge)
+    new_c_m, grow = _recenter_m(l_arr, m_arr, w_arr, {10: 10}, dm=3)
+    assert new_c_m[10] == 10 and grow is True

@@ -314,6 +314,38 @@ def _gradient_window_modes(orbit, lmax, c_m, dm, dk, dn):
     return sorted(out)
 
 
+def _m_center_seed(orbit, lmax):
+    # prograde l=m dominance; data-driven recenter corrects per orbit
+    return {l: l for l in range(2, lmax + 1)}
+
+
+def _recenter_m(l_arr, m_arr, w_arr, c_m, dm):
+    """Per l, move the m-center to the argmax of accumulated weight w_arr,
+    but only when that argmax is interior to the current band [c-dm, c+dm].
+    A boundary argmax means the band has not captured the peak -> keep the
+    center and flag grow=True so the M direction expands before we trust it.
+    """
+    l_arr = np.asarray(l_arr)
+    m_arr = np.asarray(m_arr)
+    w_arr = np.asarray(w_arr, float)
+    new_c_m = dict(c_m)
+    grow = False
+    for l in np.unique(l_arr):
+        l = int(l)
+        sel = l_arr == l
+        if not sel.any():
+            continue
+        ms, ws = m_arr[sel], w_arr[sel]
+        peak_m = int(ms[int(np.argmax(ws))])
+        c = c_m.get(l, l)
+        lo, hi = c - dm, c + dm
+        if lo < peak_m < hi:
+            new_c_m[l] = peak_m
+        elif peak_m <= lo or peak_m >= hi:
+            grow = True
+    return new_c_m, grow
+
+
 def _peak_window_modes(orbit, lmax, dk, dn):
     # canonical (l, m, k, n) with l in [2, lmax], m in [0, l], and k, n
     # banded (half-widths dk, dn) around their (l, m)-peaks. Degenerate
