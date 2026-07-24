@@ -345,3 +345,31 @@ def test_decay_step_cap_and_multichannel_binds_max():
     done, step = _decay_step({"Edot": Sfast, "Ldot": Sslow},
                              {"Edot": 1e-9, "Ldot": 1e-9}, cap=3)
     assert not done and step == 3             # slow channel binds, capped at 3
+
+
+from hblteuk.jax.driver import _m_offset, _gradient_window_modes
+
+
+def test_m_offset():
+    assert _m_offset(10, 8, 10) == 2
+    assert _m_offset(10, 10, 10) == 0
+
+
+def test_gradient_window_bands_m(orb_gen):
+    # c_m = top (m=l); dm=1 keeps only m in {l-1, l}; canonical half only
+    lmax = 8
+    c_m = {l: l for l in range(2, lmax + 1)}
+    modes = _gradient_window_modes(orb_gen, lmax, c_m, dm=1, dk=1, dn=1)
+    ls = sorted({l for l, m, k, n in modes})
+    assert ls == list(range(2, lmax + 1))
+    for l, m, k, n in modes:
+        assert l - 1 <= m <= l                     # m banded near center=l
+        assert (m > 0) or (m == 0 and k > 0) or (m == 0 and k == 0 and n > 0)
+
+
+def test_gradient_window_low_l_covers_all_m(orb_gen):
+    # at l=2 with center=2, dm=5 -> band covers all m in [0,2]
+    c_m = {2: 2}
+    modes = _gradient_window_modes(orb_gen, 2, c_m, dm=5, dk=0, dn=0)
+    ms = sorted({m for l, m, k, n in modes if l == 2})
+    assert ms == [0, 1, 2]

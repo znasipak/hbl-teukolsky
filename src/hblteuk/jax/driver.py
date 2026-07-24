@@ -277,6 +277,43 @@ def _n_offset(e, m, n):
     return min(abs(n - p), abs(n + p))
 
 
+def _m_offset(l, m, c_m):
+    # distance to this l's m-ridge center (gradient strategy)
+    return abs(m - c_m)
+
+
+def _gradient_window_modes(orbit, lmax, c_m, dm, dk, dn):
+    """Canonical-half mode list banded around the ridge in all four
+    directions: m in [c_m[l]-dm, c_m[l]+dm] (clipped to [0, l]), k banded
+    (half-width dk) around _k_peaks(l, m), n banded (half-width dn) around
+    +-_n_peak_mag(e, m). Degenerate collapse: equatorial -> k=0 only;
+    circular -> n=0 only.
+    """
+    e = orbit.e
+    equatorial = abs(orbit.x) == 1
+    circular = e == 0
+    out = set()
+    for l in range(2, lmax + 1):
+        center = c_m.get(l, l)
+        mlo = max(0, center - dm)
+        mhi = min(l, center + dm)
+        for m in range(mlo, mhi + 1):
+            k_centers = (0,) if equatorial else _k_peaks(l, m)
+            p = _n_peak_mag(e, m)
+            n_centers = (0,) if circular else (p, -p)
+            for kc in k_centers:
+                krange = (0,) if equatorial else range(kc - dk, kc + dk + 1)
+                for k in krange:
+                    for nc in n_centers:
+                        nrange = ((0,) if circular
+                                  else range(nc - dn, nc + dn + 1))
+                        for n in nrange:
+                            if ((m > 0) or (m == 0 and k > 0)
+                                    or (m == 0 and k == 0 and n > 0)):
+                                out.add((l, m, k, n))
+    return sorted(out)
+
+
 def _peak_window_modes(orbit, lmax, dk, dn):
     # canonical (l, m, k, n) with l in [2, lmax], m in [0, l], and k, n
     # banded (half-widths dk, dn) around their (l, m)-peaks. Degenerate
