@@ -1,0 +1,160 @@
+# Batched Teukolsky-Starobinsky stabilization vs the CPU path.
+# See dev/ACCURACY_DEBUG_PLAN.md for why the transform is built as an ODE
+# solve with TS-supplied Dirichlet endpoints rather than as a projection.
+import numpy as np
+import pytest
+
+jax = pytest.importorskip("jax")
+
+from hblteuk import collocode
+from hblteuk.collocode import generate_subdomain_list
+from hblteuk.geo import MiniGeo
+from hblteuk.jax import evaluate_multidomain, solve_homogeneous_batch
+from hblteuk.jax.starobinsky import (flipped_spin, ts_solve_batch,
+                                     unstable_branch)
+from hblteuk.swsh import swsh_eigenvalue
+from hblteuk.teuk import (HyperboloidalTeukolskySolver, sigma_r,
+                          hbl_teukolsky_starobinsky_system_plus_to_minus_2)
+from .conftest import ORBIT
+
+A = ORBIT[0]
+KAPPA = np.sqrt(1 - A**2)
+NDOM, NNODE = 150, 32
+MODES = [(2, 2, 0), (3, 1, 0), (2, 2, 3), (4, -3, 1)]
+
+
+@pytest.fixture(scope="module")
+def geom():
+    orbit = MiniGeo(*ORBIT)
+    smin = sigma_r(orbit.radial_roots[0], KAPPA)
+    smax = sigma_r(orbit.radial_roots[1], KAPPA)
+    su = generate_subdomain_list([0, smax], NDOM, "arcsinh7")
+    si = generate_subdomain_list([1, smin], NDOM, "arcsinh7")
+    return orbit, su, si, smin, smax
+
+
+def test_branch_spec():
+    assert unstable_branch(-2) == "up" and flipped_spin(-2) == 2
+    assert unstable_branch(2) == "in" and flipped_spin(2) == -2
+    assert unstable_branch(0) is None and flipped_spin(0) is None
+
+
+def test_fg_expressions_evaluate_on_jax_arrays():
+    # the CPU f_TS/g_TS are pure arithmetic, so they are reused as-is in the
+    # JAX path; this pins that they agree on jnp input (x64 is on via
+    # `import hblteuk.jax`)
+    import jax.numpy as jnp
+    sig = np.linspace(1e-3, 0.11, 17)
+    args = (0.43589, 5.243658341220, 1.8, 0.4548)
+    f_np, g_np = hbl_teukolsky_starobinsky_system_plus_to_minus_2(sig, *args)
+    f_jx, g_jx = hbl_teukolsky_starobinsky_system_plus_to_minus_2(
+        jnp.asarray(sig), *args)
+    np.testing.assert_allclose(np.asarray(f_jx), f_np, rtol=1e-13)
+    np.testing.assert_allclose(np.asarray(g_jx), g_np, rtol=1e-13)
+
+
+def test_ts_solve_batch_matches_cpu_stabilized(geom):
+    # JAX batched stabilization must reproduce the CPU stabilize=True solution
+    orbit, su, si, smin, smax = geom
+    om = np.array([orbit.mode_frequency(m, 0, n) for _, m, n in MODES])
+    lam = np.array([swsh_eigenvalue(-2, l, m, A * w)
+                    for (l, m, _), w in zip(MODES, om)])
+    ma = np.array([m * A for _, m, _ in MODES])
+
+    # stable s=+2 Up batch, then TS to s=-2
+    flip = solve_homogeneous_batch(2, KAPPA, lam - 4.0, ma, om, su, si,
+                                   n=NNODE)
+    got = ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam, ma, om, n=NNODE)
+
+    solver = collocode.CollocationODEFixedMultiDomainFixedStepSolver(n=NNODE)
+    ts = HyperboloidalTeukolskySolver(
+        domains=[[0, su[-1]], [si[-1], 1]], solver=solver,
+        subdomains={"Up": su, "In": si})
+    sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
+    ev = np.asarray(evaluate_multidomain(got, su, sig))
+    for b, (l, m, n) in enumerate(MODES):
+        cpu = ts(A, -2, l, m, om[b], eigenvalue=lam[b], stabilize=True)
+        want = cpu.psi["Up"](sig)
+        np.testing.assert_allclose(ev[b], want, rtol=1e-9,
+                                   err_msg=f"{MODES[b]}")
+
+
+def test_ts_solve_batch_is_refinement_stable(geom):
+    # the payoff, in the batched path: the TS route converges under
+    # refinement while the direct s=-2 Up march does not
+    orbit, _, _, smin, smax = geom
+    l, m, n = 2, 2, 3
+    w = orbit.mode_frequency(m, 0, n)
+    lam = np.array([swsh_eigenvalue(-2, l, m, A * w)])
+    ma = np.array([m * A])
+    om = np.array([w])
+    sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
+
+    def routes(nd):
+        su = generate_subdomain_list([0, smax], nd, "arcsinh7")
+        si = generate_subdomain_list([1, smin], nd, "arcsinh7")
+        flip = solve_homogeneous_batch(2, KAPPA, lam - 4.0, ma, om, su, si,
+                                       n=NNODE)
+        c = ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam, ma, om,
+                           n=NNODE)
+        direct = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si,
+                                         n=NNODE)
+        t = np.asarray(evaluate_multidomain(c, su, sig))[0]
+        d = np.asarray(evaluate_multidomain(direct.coeffs_up, su, sig))[0]
+        return t / t[0], d / d[0]
+
+    t150, d150 = routes(150)
+    t300, d300 = routes(300)
+    ts_drift = np.max(np.abs(t300 - t150) / np.abs(t150))
+    dir_drift = np.max(np.abs(d300 - d150) / np.abs(d150))
+    assert ts_drift < 1e-11
+    assert dir_drift > 100 * ts_drift
+
+
+def test_ts_solve_batch_rejects_unsupported_spin(geom):
+    orbit, su, si, _, _ = geom
+    om = np.array([0.3])
+    with pytest.raises(ValueError, match="TS stabilization"):
+        ts_solve_batch(np.zeros((1, len(su) - 1, NNODE), complex), su, KAPPA,
+                       0, np.array([4.0]), np.array([0.0]), om, n=NNODE)
+
+
+def test_solve_homogeneous_batch_stabilize_flag(geom):
+    # the flag must reproduce the manual TS route, leave the stable branch
+    # alone, and default to off
+    orbit, su, si, smin, smax = geom
+    om = np.array([orbit.mode_frequency(m, 0, n) for _, m, n in MODES])
+    lam = np.array([swsh_eigenvalue(-2, l, m, A * w)
+                    for (l, m, _), w in zip(MODES, om)])
+    ma = np.array([m * A for _, m, _ in MODES])
+
+    off = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si, n=NNODE)
+    on = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si, n=NNODE,
+                                 stabilize=True)
+    flip = solve_homogeneous_batch(2, KAPPA, lam - 4.0, ma, om, su, si,
+                                   n=NNODE)
+    manual = ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam, ma, om,
+                            n=NNODE)
+
+    np.testing.assert_allclose(np.asarray(on.coeffs_up),
+                               np.asarray(manual), rtol=1e-12)
+    # In is already stable at s=-2 and must be untouched
+    np.testing.assert_array_equal(np.asarray(on.coeffs_in),
+                                  np.asarray(off.coeffs_in))
+    # default is off
+    dflt = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si, n=NNODE)
+    np.testing.assert_array_equal(np.asarray(dflt.coeffs_up),
+                                  np.asarray(off.coeffs_up))
+
+
+def test_solve_homogeneous_batch_stabilize_noop_other_spin(geom):
+    # s=0 has no TS partner here; the flag must fall through untouched
+    orbit, su, si, _, _ = geom
+    om = np.array([orbit.mode_frequency(2, 0, 0)])
+    lam = np.array([swsh_eigenvalue(0, 2, 2, A * om[0])])
+    ma = np.array([2 * A])
+    off = solve_homogeneous_batch(0, KAPPA, lam, ma, om, su, si, n=NNODE)
+    on = solve_homogeneous_batch(0, KAPPA, lam, ma, om, su, si, n=NNODE,
+                                 stabilize=True)
+    np.testing.assert_array_equal(np.asarray(on.coeffs_up),
+                                  np.asarray(off.coeffs_up))

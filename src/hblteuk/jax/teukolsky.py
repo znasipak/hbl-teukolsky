@@ -68,7 +68,7 @@ def _solve_core(s, kappa, lam, ma, omega, subs, n):
 
 
 def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
-                            subdomains_in, n=32):
+                            subdomains_in, n=32, stabilize=False):
     """Batched Up and In homogeneous solutions on shared subdomain structures.
 
     s: spin weight (python int); kappa = sqrt(1 - a^2) (python float);
@@ -78,6 +78,13 @@ def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
 
     Radiative modes only: the omega = 0 static branch uses a different ODE
     and stays on the CPU path (GPU plan Phase 2 scope).
+
+    stabilize=True replaces the branch whose march is unstable at this spin
+    (Up for s=-2, In for s=+2) by a solve at the opposite spin mapped back
+    with Teukolsky-Starobinsky — removing a ~1e-8 error floor. The stable
+    branch is untouched, as are other spins. Note the returned residuals for
+    the stabilized branch belong to the opposite-spin march that actually ran.
+    Default off, so existing results are unchanged.
 
     Returns HomogeneousBatch; evaluate with chebyshev.evaluate_multidomain.
     """
@@ -95,5 +102,26 @@ def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
         raise ValueError("subdomains_in must descend from sigma = 1")
     subs_up[0], subs_in[0] = 0.0, 1.0  # snap BC endpoints exactly
 
-    return _solve_core(int(s), float(kappa), lam, ma, omega,
-                       (jnp.asarray(subs_up), jnp.asarray(subs_in)), int(n))
+    subs = (jnp.asarray(subs_up), jnp.asarray(subs_in))
+    from .starobinsky import flipped_spin, ts_solve_batch, unstable_branch
+    branch = unstable_branch(int(s)) if stabilize else None
+    if branch is None:
+        return _solve_core(int(s), float(kappa), lam, ma, omega, subs, int(n))
+
+    # solve at the opposite spin, where this branch's march is stable, and map
+    # back. lambda_CH = lambda_s + s(s+1) is spin invariant, so the flipped
+    # eigenvalue is exact algebra -- no second spheroidal eigensolve.
+    s_flip = flipped_spin(int(s))
+    lam_flip = lam + (s*(s + 1) - s_flip*(s_flip + 1))
+    flip = _solve_core(int(s_flip), float(kappa), lam_flip, ma, omega, subs,
+                       int(n))
+    plain = _solve_core(int(s), float(kappa), lam, ma, omega, subs, int(n))
+    if branch == "up":
+        cu = ts_solve_batch(flip.coeffs_up, subs_up, float(kappa), int(s),
+                            lam, ma, omega, n=int(n))
+        return HomogeneousBatch(cu, plain.coeffs_in, flip.errors_up,
+                                plain.errors_in)
+    ci = ts_solve_batch(flip.coeffs_in, subs_in, float(kappa), int(s),
+                        lam, ma, omega, n=int(n))
+    return HomogeneousBatch(plain.coeffs_up, ci, plain.errors_up,
+                            flip.errors_in)
