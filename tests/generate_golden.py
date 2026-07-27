@@ -1,7 +1,13 @@
 # Generate golden regression data for Phase 0 (see dev/PHASE0.md).
 # Usage: python tests/generate_golden.py
-# Writes tests/golden/golden_v1.npz. Regenerate ONLY on intentional physics
+# Writes tests/golden/golden_v2.npz. Regenerate ONLY on intentional physics
 # changes; commit the result.
+#
+# v2 (2026-07-27) is produced with Teukolsky-Starobinsky branch stabilization
+# on by default. v1 is retained unchanged so the ~1e-8 shift stays auditable:
+# it was generated with the s=-2 Up march run in its unstable direction, which
+# disagreed with the independent pybhpt reference at ~3.7e-9 (v2: ~1e-13).
+# See dev/ACCURACY_DEBUG_PLAN.md.
 import pathlib
 
 import numpy as np
@@ -15,7 +21,7 @@ from hblteuk.mode import (
 from hblteuk.swsh import SpinWeightedSpheroidalHarmonic
 from hblteuk.teuk import HyperboloidalTeukolskySolver, sigma_r
 
-OUT = pathlib.Path(__file__).parent / "golden" / "golden_v1.npz"
+OUT = pathlib.Path(__file__).parent / "golden" / "golden_v2.npz"
 
 ORBIT = (0.9, 10.0, 0.2, 1.0)  # a, p, e, x
 SOLVER_KWARGS = {"subdomains": 150, "tol": 1e-13, "spacing": "arcsinh7"}

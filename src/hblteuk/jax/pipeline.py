@@ -55,7 +55,7 @@ class ModeTableSolution(NamedTuple):
 def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
                      nnodes=32, spacing="arcsinh7", nsamples=2**10,
                      method="fft", max_memory_gb=8.0, return_radial=True,
-                     stabilize=False):
+                     stabilize=True):
     """Solve a radiative (s = -2, equatorial) mode table end to end.
 
     l, m, n: (B,) integer arrays; every mode must be radiative (omega != 0).
@@ -175,7 +175,7 @@ class SphericalModeSolution(NamedTuple):
 
 def solve_spherical_mode_table(orbit, s, l, m, k, subdomains=None,
                                ndomains=150, nnodes=32, spacing="arcsinh7",
-                               nsamples=2**8, method="fft", stabilize=False):
+                               nsamples=2**8, method="fft", stabilize=True):
     """Solve a radiative (s = -2) spherical-inclined mode table end to end.
 
     orbit: MiniGeo with e = 0 (any |x| <= 1). l, m, k: (B,) integers;
@@ -335,7 +335,7 @@ def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
                              ndomains=150, nnodes=32, spacing="arcsinh7",
                              nsamples=2**10, ntheta=2**8, method="fft",
                              max_memory_gb=8.0, return_radial=True,
-                             stabilize=False):
+                             stabilize=True):
     """Solve a radiative (s = -2) generic-orbit mode table end to end.
 
     orbit: MiniGeo with e != 0 and |x| < 1. l, m, k, n: (B,) integers;

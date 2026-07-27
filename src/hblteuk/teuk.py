@@ -277,7 +277,7 @@ class HyperboloidalTeukolskySolver:
             out.Z_sigma_deriv = out.Z_radiative_deriv
             out.Z_sigma_deriv2 = out.Z_radiative_deriv2
 
-    def __call__(self, a, s, l, m, omega, eigenvalue = None, rescale = False, reduce = False, stabilize = False, **reduce_kwargs):
+    def __call__(self, a, s, l, m, omega, eigenvalue = None, rescale = False, reduce = False, stabilize = True, **reduce_kwargs):
         hbl = HyperboloidalTeukolsky(a, s, l, m, omega, eigenvalue)
         ma = m*a
         psi = {"In": None, "Up": None}

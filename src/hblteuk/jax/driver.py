@@ -212,7 +212,7 @@ def _want_bucket(bucket):
 
 
 def _bucketed_solve(orbit, s, arr, nsamples, ntheta, max_memory_gb,
-                    pad, ndomains=150, nnodes=32, stabilize=False):
+                    pad, ndomains=150, nnodes=32, stabilize=True):
     """solve_modes with the batch padded to the pipeline chunk size so every
     adaptive round reuses one compiled trace. Padding rows are duplicates of
     real modes (kept valid) and are sliced off before return. csize is the
@@ -401,7 +401,7 @@ class _Accum:
 
 def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
                  strategy="box", verbose=False, bucket="auto",
-                 stabilize=False):
+                 stabilize=True):
     """Adaptive staged-round flux driver. strategy="box" grows a full
     rectangular canonical (l, m, k, n) window; strategy="peak" grows four
     knobs (k_ext, n_ext, dm, dl) around the spectral ridges l ~ |m+k| and
@@ -410,9 +410,10 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     contribution < tol x total per channel, or lmax_cap (warns,
     converged=False).
 
-    stabilize=True solves the branch whose radial march is unstable at this
-    spin (Up for s=-2) at the opposite spin and maps it back with
-    Teukolsky-Starobinsky, removing a ~1e-8 error floor; default off.
+    stabilize solves the branch whose radial march is unstable at this spin
+    (Up for s=-2) at the opposite spin and maps it back with
+    Teukolsky-Starobinsky, removing a ~1e-8 error floor. On by default;
+    pass stabilize=False for the legacy path.
 
     bucket="auto" pads each round's batch to the pipeline chunk size on GPU
     (one shared XLA trace instead of a recompile per round; big win on small
@@ -434,7 +435,7 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
 
 
 def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                      pad=False, stabilize=False):
+                      pad=False, stabilize=True):
     """Adaptive staged-round flux driver: grows a rectangular canonical
     (l, m, k, n) window in batched rounds until every axis' edge
     contribution < tol x running total per channel (l axis: last two
@@ -499,7 +500,7 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
 
 def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                       pad=False, stabilize=False):
+                       pad=False, stabilize=True):
     # iterate (l, m) naturally to lmax; band k, n around their (l, m)-peaks
     # with half-widths dk, dn. Three adaptive knobs. l uses the box two-slab
     # rule; dk/dn grow while their outermost offset shell contributes > tol.
@@ -586,7 +587,7 @@ def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
 
 def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                           pad=False, stabilize=False):
+                           pad=False, stabilize=True):
     """Decay-predicted adaptive driver. Grows four directions (L, M, K, N),
     each to the extent its estimated geometric flux tail needs to fall under
     tol/n_dir of the per-channel total; stops on max(predicted_tail,

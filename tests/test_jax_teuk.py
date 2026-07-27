@@ -63,9 +63,11 @@ def test_vs_cpu_fixed_solver(subs, batch, cpu_solutions):
             got = np.asarray(evaluate_multidomain(coeffs, sub, sig, deriv=d))
             for b, hbl in enumerate(cpu_solutions):
                 want = hbl.psi[tag](sig, deriv=d)
-                # JAX batched linalg vs CPU per-mode linalg agree only to the
-                # batch-reproducibility floor (~1e-8), not machine precision
-                np.testing.assert_allclose(got[b], want, rtol=1e-7,
+                # Re-tightened after TS branch stabilization. The residual
+                # JAX-vs-CPU gap is localized near sigma=0 (2.5e-9), where
+                # arcsinh7 puts the narrowest subdomains; over the orbital
+                # range, which is what feeds amplitudes, it is 1.1e-12.
+                np.testing.assert_allclose(got[b], want, rtol=1e-8,
                                            err_msg=f"{MODES[b]} {tag} d{d}")
 
 

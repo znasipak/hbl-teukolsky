@@ -98,7 +98,7 @@ def test_ts_solve_batch_is_refinement_stable(geom):
         c = ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam, ma, om,
                            n=NNODE)
         direct = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si,
-                                         n=NNODE)
+                                         n=NNODE, stabilize=False)
         t = np.asarray(evaluate_multidomain(c, su, sig))[0]
         d = np.asarray(evaluate_multidomain(direct.coeffs_up, su, sig))[0]
         return t / t[0], d / d[0]
@@ -128,7 +128,8 @@ def test_solve_homogeneous_batch_stabilize_flag(geom):
                     for (l, m, _), w in zip(MODES, om)])
     ma = np.array([m * A for _, m, _ in MODES])
 
-    off = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si, n=NNODE)
+    off = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si, n=NNODE,
+                                  stabilize=False)
     on = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si, n=NNODE,
                                  stabilize=True)
     flip = solve_homogeneous_batch(2, KAPPA, lam - 4.0, ma, om, su, si,
@@ -141,10 +142,10 @@ def test_solve_homogeneous_batch_stabilize_flag(geom):
     # In is already stable at s=-2 and must be untouched
     np.testing.assert_array_equal(np.asarray(on.coeffs_in),
                                   np.asarray(off.coeffs_in))
-    # default is off
+    # on by default
     dflt = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si, n=NNODE)
     np.testing.assert_array_equal(np.asarray(dflt.coeffs_up),
-                                  np.asarray(off.coeffs_up))
+                                  np.asarray(on.coeffs_up))
 
 
 def test_solve_homogeneous_batch_stabilize_noop_other_spin(geom):
@@ -153,7 +154,8 @@ def test_solve_homogeneous_batch_stabilize_noop_other_spin(geom):
     om = np.array([orbit.mode_frequency(2, 0, 0)])
     lam = np.array([swsh_eigenvalue(0, 2, 2, A * om[0])])
     ma = np.array([2 * A])
-    off = solve_homogeneous_batch(0, KAPPA, lam, ma, om, su, si, n=NNODE)
+    off = solve_homogeneous_batch(0, KAPPA, lam, ma, om, su, si, n=NNODE,
+                                  stabilize=False)
     on = solve_homogeneous_batch(0, KAPPA, lam, ma, om, su, si, n=NNODE,
                                  stabilize=True)
     np.testing.assert_array_equal(np.asarray(on.coeffs_up),
@@ -177,7 +179,8 @@ def test_stabilized_amplitudes_tighten_the_pybhpt_gate():
         n = t[:, C["n"]].astype(int)
         zup = t[:, C["zup_re"]] + 1j * t[:, C["zup_im"]]
 
-        off = np.asarray(solve_mode_table(orbit, -2, l, m, n).amplitudes)
+        off = np.asarray(solve_mode_table(orbit, -2, l, m, n,
+                                          stabilize=False).amplitudes)
         on = np.asarray(solve_mode_table(orbit, -2, l, m, n,
                                          stabilize=True).amplitudes)
         d_off = np.max(np.abs(off[:, 1] - zup) / np.abs(zup))
@@ -193,7 +196,7 @@ def test_total_fluxes_stabilize_threads_through(orbit_kind):
     from hblteuk.jax import total_fluxes
     orb = (MiniGeo(0.9, 10.0, 0.2, 1.0) if orbit_kind == "eccentric"
            else MiniGeo(0.9, 10.0, 0.0, 0.5))
-    off = total_fluxes(orb, tol=1e-5, strategy="box")
+    off = total_fluxes(orb, tol=1e-5, strategy="box", stabilize=False)
     on = total_fluxes(orb, tol=1e-5, strategy="box", stabilize=True)
     for ch in ("Edot", "Ldot", "Qdot"):
         np.testing.assert_allclose(getattr(on, ch), getattr(off, ch),

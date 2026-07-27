@@ -68,7 +68,7 @@ def _solve_core(s, kappa, lam, ma, omega, subs, n):
 
 
 def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
-                            subdomains_in, n=32, stabilize=False):
+                            subdomains_in, n=32, stabilize=True):
     """Batched Up and In homogeneous solutions on shared subdomain structures.
 
     s: spin weight (python int); kappa = sqrt(1 - a^2) (python float);
@@ -84,7 +84,7 @@ def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
     with Teukolsky-Starobinsky — removing a ~1e-8 error floor. The stable
     branch is untouched, as are other spins. Note the returned residuals for
     the stabilized branch belong to the opposite-spin march that actually ran.
-    Default off, so existing results are unchanged.
+    On by default since 2026-07-27; pass stabilize=False for the legacy path.
 
     Returns HomogeneousBatch; evaluate with chebyshev.evaluate_multidomain.
     """

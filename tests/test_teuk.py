@@ -73,11 +73,15 @@ def test_homogeneous_vs_golden(orbit, teuk_solver, golden):
             for d in (0, 1, 2):
                 got = hbl.psi[bc](sig, deriv=d)
                 want = golden[f"hom{i}_psi_{tag}_d{d}"]
-                # golden generated on a different BLAS/LAPACK build; the
-                # collocation linear solve is reproducible only to ~1e-8
-                # across platforms (see test_jax_teuk.py::test_vs_golden)
+                # Re-tightened after TS branch stabilization (golden v2): the
+                # s=-2 Up march is no longer run in its unstable direction, so
+                # the old ~1e-8 roundoff-path floor is gone. What remains is
+                # localized near sigma=0, where arcsinh7 puts the narrowest
+                # subdomains and psi' in the TS boundary data carries the most
+                # differentiation amplification (measured 2.5e-9 CPU vs JAX
+                # there, 1.1e-12 over the orbital range).
                 np.testing.assert_allclose(
-                    got, want, rtol=1e-7, atol=1e-8 * np.max(np.abs(want)),
+                    got, want, rtol=1e-8, atol=1e-10 * np.max(np.abs(want)),
                     err_msg=f"case {i} {bc} deriv={d}")
 
 

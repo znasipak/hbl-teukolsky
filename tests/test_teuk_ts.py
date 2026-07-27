@@ -133,7 +133,7 @@ def test_ts_up_route_is_refinement_stable():
         return p / p[0]
 
     def direct(ndom):
-        hm, _, _ = _solve(ndom, -2, w, lam_m2)
+        hm, _, _ = _solve(ndom, -2, w, lam_m2, stabilize=False)
         d = hm.psi["Up"](sig)
         return d / d[0]
 
@@ -154,7 +154,7 @@ def test_ts_in_route_is_refinement_stable():
         return p / p[0]
 
     def direct(ndom):
-        hp, _, _ = _solve(ndom, 2, w, lam_p2)
+        hp, _, _ = _solve(ndom, 2, w, lam_p2, stabilize=False)
         d = hp.psi["In"](sig)
         return d / d[0]
 
@@ -186,26 +186,31 @@ def test_stabilize_leaves_the_stable_branch_untouched():
     # s=-2 In and s=+2 Up are already stable; the flag must not touch them
     w, lam_m2, lam_p2, lam_ch = _eigs()
     _, smin, smax = _geom()
-    off_m2, _, si = _solve(150, -2, w, lam_m2)
+    off_m2, _, si = _solve(150, -2, w, lam_m2, stabilize=False)
     on_m2, _, _ = _solve(150, -2, w, lam_m2, stabilize=True)
     sigI = np.linspace(si[-1] + 0.01, 0.99, 25)
     np.testing.assert_array_equal(on_m2.psi["In"](sigI),
                                   off_m2.psi["In"](sigI))
 
-    off_p2, _, _ = _solve(150, 2, w, lam_p2)
+    off_p2, _, _ = _solve(150, 2, w, lam_p2, stabilize=False)
     on_p2, _, _ = _solve(150, 2, w, lam_p2, stabilize=True)
     sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
     np.testing.assert_array_equal(on_p2.psi["Up"](sig), off_p2.psi["Up"](sig))
 
 
-def test_stabilize_is_off_by_default():
-    # default must remain the unstabilized path, bit for bit
+def test_stabilize_is_on_by_default():
+    # on by default since 2026-07-27; the legacy path stays reachable and
+    # differs at the ~1e-8 level that stabilizing removes
     w, lam_m2, lam_p2, lam_ch = _eigs()
     _, _, smax = _geom()
     sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
-    a, _, _ = _solve(150, -2, w, lam_m2)
-    b, _, _ = _solve(150, -2, w, lam_m2, stabilize=False)
-    np.testing.assert_array_equal(a.psi["Up"](sig), b.psi["Up"](sig))
+    dflt, _, _ = _solve(150, -2, w, lam_m2)
+    on, _, _ = _solve(150, -2, w, lam_m2, stabilize=True)
+    legacy, _, _ = _solve(150, -2, w, lam_m2, stabilize=False)
+    np.testing.assert_array_equal(dflt.psi["Up"](sig), on.psi["Up"](sig))
+    d = np.max(np.abs(dflt.psi["Up"](sig) - legacy.psi["Up"](sig))
+               / np.abs(legacy.psi["Up"](sig)))
+    assert 1e-10 < d < 1e-6, f"legacy-vs-stabilized shift {d:.2e}"
 
 
 def test_stabilize_noop_for_other_spins():
@@ -214,7 +219,7 @@ def test_stabilize_noop_for_other_spins():
     _, _, smax = _geom()
     lam0 = swsh_eigenvalue(0, L, M, A * w)
     sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
-    off, _, _ = _solve(150, 0, w, lam0)
+    off, _, _ = _solve(150, 0, w, lam0, stabilize=False)
     on, _, _ = _solve(150, 0, w, lam0, stabilize=True)
     np.testing.assert_array_equal(on.psi["Up"](sig), off.psi["Up"](sig))
 
@@ -279,7 +284,8 @@ def test_ts_first_derivative_is_refinement_stable(branch):
             return p / p[0]
 
         def direct(ndom):
-            d = _solve(ndom, -2, w, lam_m2)[0].psi["Up"](sig, deriv=1)
+            d = _solve(ndom, -2, w, lam_m2,
+                       stabilize=False)[0].psi["Up"](sig, deriv=1)
             return d / d[0]
     else:
         sig = np.linspace(smin + 0.02, 0.99, 25)
@@ -291,7 +297,8 @@ def test_ts_first_derivative_is_refinement_stable(branch):
             return p / p[0]
 
         def direct(ndom):
-            d = _solve(ndom, 2, w, lam_p2)[0].psi["In"](sig, deriv=1)
+            d = _solve(ndom, 2, w, lam_p2,
+                       stabilize=False)[0].psi["In"](sig, deriv=1)
             return d / d[0]
 
     ts_drift, dir_drift = _drift(ts_route), _drift(direct)
