@@ -309,7 +309,11 @@ class CollocationTransformation:
         z_nodes_T = z_nodes.reshape(self.n, 1)
 
         Fmat, Gmat = transform_sys(z_nodes_T, *args)
-        Gmat = dzdx*Gmat
+        # transform_sys returns g multiplying dPsi/dz, but Tmat1 carries
+        # dPsi/dx, so divide by dz/dx. (Invisible on the default [-1,1] domain
+        # where dzdx = 1; on narrow subdomains the old dzdx* factor suppressed
+        # the g term by dzdx^2 ~ 1e-7.)
+        Gmat = Gmat/dzdx
 
         Mmat = xp.multiply(Gmat, self.Tmat1) + xp.multiply(Fmat, self.Tmat0)
 
