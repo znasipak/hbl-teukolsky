@@ -75,7 +75,7 @@ def test_ts_transform_matches_pointwise_identity():
         sig, KAPPA, lam_ch, M * A, w)
     want = f * hp.psi["Up"](sig) + g * hp.psi["Up"](sig, deriv=1)
     got = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w,
-                                renormalize=False)(sig)
+                                renormalize=False, method="projection")(sig)
     np.testing.assert_allclose(got, want, rtol=1e-13)
 
     sigI = np.linspace(si[-1] + 0.01, 0.99, 40)
@@ -83,7 +83,7 @@ def test_ts_transform_matches_pointwise_identity():
         sigI, KAPPA, lam_ch, M * A, w)
     want = f * hm.psi["In"](sigI) + g * hm.psi["In"](sigI, deriv=1)
     got = ts_in_minus_to_plus_2(hm.psi["In"], KAPPA, lam_ch, M * A, w,
-                                renormalize=False)(sigI)
+                                renormalize=False, method="projection")(sigI)
     np.testing.assert_allclose(got, want, rtol=1e-13)
 
 
@@ -96,27 +96,23 @@ def test_ts_renormalization_restores_boundary_convention():
     w, lam_m2, lam_p2, lam_ch = _eigs()
     hp, su, _ = _solve(150, 2, w, lam_p2)
     raw = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w,
-                                renormalize=False)
+                                renormalize=False, method="projection")
     fixed = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w)
     sb = np.asarray(hp.psi["Up"].domains)[0]
     assert raw(sb) / hp.psi["Up"](sb) == pytest.approx(16.0 * w**4, rel=1e-10)
     assert fixed(sb) == pytest.approx(hp.psi["Up"](sb), rel=1e-12)
 
 
-def test_ts_transform_ode_residual_is_bounded():
-    # The transformed coefficients are a *projection*, so unlike a collocation
-    # solve the ODE is not enforced at the nodes and the spectrally-computed
-    # psi'' carries amplified error (~1e-8; adding basis functions does not
-    # help -- it is differentiation amplification, not truncation). This does
-    # not affect production: the source integrator builds psi'' from the ODE
-    # itself (source.py:104, the spectral deriv=2 call there is commented out),
-    # so only psi and psi' matter -- see the refinement tests below.
+def test_ts_transform_satisfies_the_target_ode():
+    # the default construction solves the s=-2 equation with TS-supplied
+    # Dirichlet endpoints, so unlike a projection it satisfies that equation
+    # at the collocation nodes by construction
     w, lam_m2, lam_p2, lam_ch = _eigs()
     _, _, smax = _geom()
     hp, _, _ = _solve(150, 2, w, lam_p2)
     psi_m2 = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w)
     sig = np.linspace(0.02 * smax, 0.98 * smax, 40)
-    assert _residual(psi_m2, sig, -2, lam_m2, w) < 1e-6
+    assert _residual(psi_m2, sig, -2, lam_m2, w) < 1e-10
 
 
 def _drift(route):
@@ -252,31 +248,17 @@ def test_Zup_amplitude_is_more_convergent_when_stabilized():
     assert d_on < d_off / 10.0, f"Z_Up stabilized {d_on:.2e} vs {d_off:.2e}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN LIMITATION -- smooth error vs rough error. Every pointwise "
-           "input to Z^In gets BETTER when stabilized (PsiUp 2.6e-8 -> 4.3e-15, "
-           "dPsiUp 1.27e-8 -> 1.57e-10), yet Z^In degrades. Reason: the "
-           "unstable march's error is contamination by eps(sigma)*Psi_In, a "
-           "genuine solution of the same ODE, hence perfectly SMOOTH "
-           "(measured roughness 0.00) -- and Z^In is an oscillatory integral "
-           "at harmonic n, which filters smooth error out almost entirely. "
-           "The transformed solution's error is roundoff-level but ROUGH "
-           "(roughness ~1), because the projection is done independently per "
-           "subdomain; rough error aliases straight into harmonic n. Spectral "
-           "differentiation amplifies 1e-15 roundoff to ~1e-9 in psi'. Z^Up "
-           "is unaffected because it integrates Psi_In (untouched) and sees "
-           "the transformed solution only through the Wronskian, evaluated at "
-           "a single point. Fix: build psi'_-2 analytically from the "
-           "differentiated TS relation, psi'_-2 = F psi_+2 + G psi_+2' with "
-           "F = f' - g*U/P and G = f + g' - g*Q/P, so psi' never comes from "
-           "differentiating a projection. See dev/TS_STABILIZE_PLAN.md.")
 def test_Zin_amplitude_is_more_convergent_when_stabilized():
+    # Z^In is built from Psi_Up AND its derivatives, so it is the amplitude
+    # that exposed the difference between fitting the TS relation and solving
+    # for it. With the ODE+Dirichlet construction psi' comes from the equation
+    # rather than from differentiating an interpolant, and Z^In improves
+    # 568-2897x across n = 0..3 (it degraded ~100x under the projection).
     off_150, off_300 = _amps(150, False), _amps(300, False)
     on_150, on_300 = _amps(150, True), _amps(300, True)
     d_on = abs(on_300[0] - on_150[0]) / abs(on_150[0])
     d_off = abs(off_300[0] - off_150[0]) / abs(off_150[0])
-    assert d_on < d_off
+    assert d_on < d_off / 10.0, f"Z_In stabilized {d_on:.2e} vs {d_off:.2e}"
 
 
 @pytest.mark.parametrize("branch", ["Up", "In"])
