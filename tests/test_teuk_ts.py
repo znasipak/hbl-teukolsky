@@ -74,15 +74,33 @@ def test_ts_transform_matches_pointwise_identity():
     f, g = hbl_teukolsky_starobinsky_system_plus_to_minus_2(
         sig, KAPPA, lam_ch, M * A, w)
     want = f * hp.psi["Up"](sig) + g * hp.psi["Up"](sig, deriv=1)
-    got = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w)(sig)
+    got = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w,
+                                renormalize=False)(sig)
     np.testing.assert_allclose(got, want, rtol=1e-13)
 
     sigI = np.linspace(si[-1] + 0.01, 0.99, 40)
     f, g = hbl_teukolsky_starobinsky_system_minus_to_plus_2(
         sigI, KAPPA, lam_ch, M * A, w)
     want = f * hm.psi["In"](sigI) + g * hm.psi["In"](sigI, deriv=1)
-    got = ts_in_minus_to_plus_2(hm.psi["In"], KAPPA, lam_ch, M * A, w)(sigI)
+    got = ts_in_minus_to_plus_2(hm.psi["In"], KAPPA, lam_ch, M * A, w,
+                                renormalize=False)(sigI)
     np.testing.assert_allclose(got, want, rtol=1e-13)
+
+
+def test_ts_renormalization_restores_boundary_convention():
+    # The raw transform multiplies by the Starobinsky constant (f_TS(0) =
+    # 16 omega^4 for plus_to_minus). That factor does NOT cancel out of the
+    # amplitudes -- Z^Up is built from Psi_In over the Wronskian, so it scales
+    # as 1/c -- hence the transform must restore the source solve's boundary
+    # value. Assert both the factor and that it is divided out.
+    w, lam_m2, lam_p2, lam_ch = _eigs()
+    hp, su, _ = _solve(150, 2, w, lam_p2)
+    raw = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w,
+                                renormalize=False)
+    fixed = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w)
+    sb = np.asarray(hp.psi["Up"].domains)[0]
+    assert raw(sb) / hp.psi["Up"](sb) == pytest.approx(16.0 * w**4, rel=1e-10)
+    assert fixed(sb) == pytest.approx(hp.psi["Up"](sb), rel=1e-12)
 
 
 def test_ts_transform_ode_residual_is_bounded():
@@ -203,6 +221,56 @@ def test_stabilize_noop_for_other_spins():
     off, _, _ = _solve(150, 0, w, lam0)
     on, _, _ = _solve(150, 0, w, lam0, stabilize=True)
     np.testing.assert_array_equal(on.psi["Up"](sig), off.psi["Up"](sig))
+
+
+def _amps(ndom, stabilize):
+    # amplitudes through the full source integrator, at a given subdomain count
+    from hblteuk.mode import TeukolskyPointParticleModeGenerator
+    orbit, _, _ = _geom()
+    solver = collocode.CollocationODEMultiDomainFixedStepSolver(n=32)
+    kw = {"subdomains": ndom, "tol": 1e-13, "spacing": "arcsinh7"}
+    gen = TeukolskyPointParticleModeGenerator(orbit, solver, kw)
+    md = gen(-2, L, M, 0, N, stabilize=stabilize)
+    return np.array([md.amplitudes["In"], md.amplitudes["Up"]])
+
+
+def test_amplitudes_agree_between_routes():
+    # the two routes must agree at the level of the error being removed
+    off, on = _amps(150, False), _amps(150, True)
+    rel = np.max(np.abs(on - off) / np.abs(off))
+    assert rel < 1e-6, f"amplitude shift {rel:.2e} far exceeds the 1e-8 floor"
+
+
+def test_Zup_amplitude_is_more_convergent_when_stabilized():
+    # Z^Up (the infinity amplitude) is built from Psi_In over the Wronskian,
+    # so it inherits the stabilized Up solution only through W. Measured
+    # 20-350x less refinement drift across n = 0..3.
+    off_150, off_300 = _amps(150, False), _amps(300, False)
+    on_150, on_300 = _amps(150, True), _amps(300, True)
+    d_on = abs(on_300[1] - on_150[1]) / abs(on_150[1])
+    d_off = abs(off_300[1] - off_150[1]) / abs(off_150[1])
+    assert d_on < d_off / 10.0, f"Z_Up stabilized {d_on:.2e} vs {d_off:.2e}"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="KNOWN LIMITATION. Z^In is built from Psi_Up AND its derivatives, "
+           "and psi' of the TS-transformed solution comes from spectrally "
+           "differentiating a projected representation (~1.6e-10) rather than "
+           "a collocation solve where the ODE is enforced at the nodes. "
+           "Z^In's source integral is cancellation-heavy (its reported "
+           "precision degrades 6.7e-15 -> 1.9e-8) and amplifies this, so Z^In "
+           "refinement drift worsens ~100x even as Z^Up improves ~90x. Fix: "
+           "build psi'_-2 analytically from the differentiated TS relation, "
+           "psi'_-2 = F psi_+2 + G psi_+2' with F = f' - g*U/P and "
+           "G = f + g' - g*Q/P, instead of differentiating the projection. "
+           "See dev/TS_STABILIZE_PLAN.md.")
+def test_Zin_amplitude_is_more_convergent_when_stabilized():
+    off_150, off_300 = _amps(150, False), _amps(300, False)
+    on_150, on_300 = _amps(150, True), _amps(300, True)
+    d_on = abs(on_300[0] - on_150[0]) / abs(on_150[0])
+    d_off = abs(off_300[0] - off_150[0]) / abs(off_150[0])
+    assert d_on < d_off
 
 
 @pytest.mark.parametrize("branch", ["Up", "In"])

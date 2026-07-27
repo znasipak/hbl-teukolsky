@@ -762,18 +762,42 @@ def ts_transform_multidomain(psi_src, transform_sys, kappa, lam_ch, ma, omega, c
 # The pole structure cooperates: plus_to_minus is singular only at sigma=1
 # (horizon) and is used on Up; minus_to_plus only at sigma=0 (infinity) and is
 # used on In.
-def ts_up_plus_to_minus_2(psi_p2, kappa, lam_ch, ma, omega, chtype=1):
+def ts_renormalize_to_source(psi_ts, psi_src):
+    r"""Rescale a TS-transformed solution back to the boundary normalization
+    of the solve it came from.
+
+    The transformation multiplies the solution by the Starobinsky constant
+    (f_TS(sigma_b), e.g. 16 omega^4 at sigma=0 for plus_to_minus). That
+    constant does NOT cancel out of the amplitudes: with the source
+    conventions of source.py, Z^In = integrand[0]/W has one power of Psi_Up
+    top and bottom and is invariant, but Z^Up = integrand[1]/W is built from
+    Psi_In over the Wronskian, so it scales as 1/c. Restoring the boundary
+    value the un-transformed solve carried removes the factor.
+    """
+    from .cheby import MultiDomainChebyshev
+
+    sb = np.asarray(psi_src.domains)[0]
+    c = psi_src(sb)/psi_ts(sb)
+    return MultiDomainChebyshev(np.asarray(psi_ts.coeffs)*c,
+                                np.asarray(psi_ts.domains))
+
+
+def ts_up_plus_to_minus_2(psi_p2, kappa, lam_ch, ma, omega, chtype=1,
+                          renormalize=True):
     """s=+2 Up (stable) -> s=-2 Up."""
-    return ts_transform_multidomain(
+    out = ts_transform_multidomain(
         psi_p2, hbl_teukolsky_starobinsky_system_plus_to_minus_2,
         kappa, lam_ch, ma, omega, chtype=chtype)
+    return ts_renormalize_to_source(out, psi_p2) if renormalize else out
 
 
-def ts_in_minus_to_plus_2(psi_m2, kappa, lam_ch, ma, omega, chtype=1):
+def ts_in_minus_to_plus_2(psi_m2, kappa, lam_ch, ma, omega, chtype=1,
+                          renormalize=True):
     """s=-2 In (stable) -> s=+2 In."""
-    return ts_transform_multidomain(
+    out = ts_transform_multidomain(
         psi_m2, hbl_teukolsky_starobinsky_system_minus_to_plus_2,
         kappa, lam_ch, ma, omega, chtype=chtype)
+    return ts_renormalize_to_source(out, psi_m2) if renormalize else out
 
 
 from .collocode import CollocationTransformation
