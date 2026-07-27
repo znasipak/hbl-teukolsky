@@ -158,3 +158,44 @@ def test_solve_homogeneous_batch_stabilize_noop_other_spin(geom):
                                  stabilize=True)
     np.testing.assert_array_equal(np.asarray(on.coeffs_up),
                                   np.asarray(off.coeffs_up))
+
+
+def test_stabilized_amplitudes_tighten_the_pybhpt_gate():
+    # The strongest available check: pybhpt is an independent implementation.
+    # The ~3.7e-9 agreement recorded as "the gate" in dev/PHASE5A.md was our
+    # error, not an irreducible floor -- stabilizing collapses it to ~1e-13.
+    import pathlib
+    from hblteuk.jax import solve_mode_table
+    ref = np.load(pathlib.Path(__file__).parent / "golden"
+                  / "pybhpt_reference_v1.npz")
+    C = dict(l=0, m=1, n=2, zin_re=5, zin_im=6, zup_re=7, zup_im=8)
+    for tag in ("ecc", "circ"):
+        t = ref[f"{tag}_table"]
+        orbit = MiniGeo(*ref[f"{tag}_params"])
+        l = t[:, C["l"]].astype(int)
+        m = t[:, C["m"]].astype(int)
+        n = t[:, C["n"]].astype(int)
+        zup = t[:, C["zup_re"]] + 1j * t[:, C["zup_im"]]
+
+        off = np.asarray(solve_mode_table(orbit, -2, l, m, n).amplitudes)
+        on = np.asarray(solve_mode_table(orbit, -2, l, m, n,
+                                         stabilize=True).amplitudes)
+        d_off = np.max(np.abs(off[:, 1] - zup) / np.abs(zup))
+        d_on = np.max(np.abs(on[:, 1] - zup) / np.abs(zup))
+        assert d_on < 1e-11, f"{tag}: Z^Up vs pybhpt {d_on:.2e}"
+        assert d_on < d_off / 100, f"{tag}: {d_on:.2e} vs {d_off:.2e}"
+
+
+@pytest.mark.parametrize("orbit_kind", ["eccentric", "spherical"])
+def test_total_fluxes_stabilize_threads_through(orbit_kind):
+    # the flag must reach the flux driver and leave the converged answer
+    # unchanged well within tol (it corrects a ~1e-8 level error)
+    from hblteuk.jax import total_fluxes
+    orb = (MiniGeo(0.9, 10.0, 0.2, 1.0) if orbit_kind == "eccentric"
+           else MiniGeo(0.9, 10.0, 0.0, 0.5))
+    off = total_fluxes(orb, tol=1e-5, strategy="box")
+    on = total_fluxes(orb, tol=1e-5, strategy="box", stabilize=True)
+    for ch in ("Edot", "Ldot", "Qdot"):
+        np.testing.assert_allclose(getattr(on, ch), getattr(off, ch),
+                                   rtol=1e-5, atol=1e-30)
+    assert len(on.table["l"]) == len(off.table["l"])
