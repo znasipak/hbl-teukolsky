@@ -254,17 +254,23 @@ def test_Zup_amplitude_is_more_convergent_when_stabilized():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="KNOWN LIMITATION. Z^In is built from Psi_Up AND its derivatives, "
-           "and psi' of the TS-transformed solution comes from spectrally "
-           "differentiating a projected representation (~1.6e-10) rather than "
-           "a collocation solve where the ODE is enforced at the nodes. "
-           "Z^In's source integral is cancellation-heavy (its reported "
-           "precision degrades 6.7e-15 -> 1.9e-8) and amplifies this, so Z^In "
-           "refinement drift worsens ~100x even as Z^Up improves ~90x. Fix: "
-           "build psi'_-2 analytically from the differentiated TS relation, "
-           "psi'_-2 = F psi_+2 + G psi_+2' with F = f' - g*U/P and "
-           "G = f + g' - g*Q/P, instead of differentiating the projection. "
-           "See dev/TS_STABILIZE_PLAN.md.")
+    reason="KNOWN LIMITATION -- smooth error vs rough error. Every pointwise "
+           "input to Z^In gets BETTER when stabilized (PsiUp 2.6e-8 -> 4.3e-15, "
+           "dPsiUp 1.27e-8 -> 1.57e-10), yet Z^In degrades. Reason: the "
+           "unstable march's error is contamination by eps(sigma)*Psi_In, a "
+           "genuine solution of the same ODE, hence perfectly SMOOTH "
+           "(measured roughness 0.00) -- and Z^In is an oscillatory integral "
+           "at harmonic n, which filters smooth error out almost entirely. "
+           "The transformed solution's error is roundoff-level but ROUGH "
+           "(roughness ~1), because the projection is done independently per "
+           "subdomain; rough error aliases straight into harmonic n. Spectral "
+           "differentiation amplifies 1e-15 roundoff to ~1e-9 in psi'. Z^Up "
+           "is unaffected because it integrates Psi_In (untouched) and sees "
+           "the transformed solution only through the Wronskian, evaluated at "
+           "a single point. Fix: build psi'_-2 analytically from the "
+           "differentiated TS relation, psi'_-2 = F psi_+2 + G psi_+2' with "
+           "F = f' - g*U/P and G = f + g' - g*Q/P, so psi' never comes from "
+           "differentiating a projection. See dev/TS_STABILIZE_PLAN.md.")
 def test_Zin_amplitude_is_more_convergent_when_stabilized():
     off_150, off_300 = _amps(150, False), _amps(300, False)
     on_150, on_300 = _amps(150, True), _amps(300, True)
