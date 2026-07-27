@@ -274,7 +274,7 @@ class HyperboloidalTeukolskySolver:
             out.Z_sigma_deriv = out.Z_radiative_deriv
             out.Z_sigma_deriv2 = out.Z_radiative_deriv2
 
-    def __call__(self, a, s, l, m, omega, eigenvalue = None, rescale = False, reduce = False, **reduce_kwargs):
+    def __call__(self, a, s, l, m, omega, eigenvalue = None, rescale = False, reduce = False, stabilize = False, **reduce_kwargs):
         hbl = HyperboloidalTeukolsky(a, s, l, m, omega, eigenvalue)
         ma = m*a
         psi = {"In": None, "Up": None}
@@ -286,8 +286,34 @@ class HyperboloidalTeukolskySolver:
             y1 = 2.*hbl.kappa*xp.exp(-1.j*(2.*hbl.frequency - 0.5*ma/hbl.horizon)*(1. + hbl.kappa + 2.*xp.log(hbl.kappa)))
             bcIn = boundary_condition_in(hbl.kappa, s, hbl.eigenvalue, ma, omega, scale = y1)
 
-            psi["Up"] = self.solver(teuk_sys, bcUp, args = (hbl.kappa, hbl.s, hbl.eigenvalue, ma, hbl.frequency), domain = self.domain["Up"], **self.solver_kwargs["Up"])
-            psi["In"] = self.solver(teuk_sys, bcIn, args = (hbl.kappa, hbl.s, hbl.eigenvalue, ma, hbl.frequency), domain = self.domain["In"], **self.solver_kwargs["In"])
+            # One branch per spin is marched in its unstable direction (the
+            # target solution is subdominant there, so roundoff seeding the
+            # growing solution amplifies ~7 orders across a long march):
+            # Up for s=-2, In for s=+2. Solve that branch at the opposite spin,
+            # where it is dominant, and map back with Teukolsky-Starobinsky.
+            # lambda_CH = lambda_s + s(s+1) is spin invariant, so the opposite
+            # spin's eigenvalue is exactly lambda -/+ 4 -- no second eigensolve.
+            # See dev/ACCURACY_DEBUG_PLAN.md.
+            stab_up = stabilize and s == -2
+            stab_in = stabilize and s == 2
+            lam_ch = hbl.eigenvalue + s*(s + 1)
+
+            if stab_up:
+                lam_flip = hbl.eigenvalue - 4.
+                bcUp_flip = boundary_condition_up(hbl.kappa, 2, lam_flip, ma, omega, scale = y0)
+                psi_flip = self.solver(teuk_sys, bcUp_flip, args = (hbl.kappa, 2, lam_flip, ma, hbl.frequency), domain = self.domain["Up"], **self.solver_kwargs["Up"])
+                psi["Up"] = ts_up_plus_to_minus_2(psi_flip, hbl.kappa, lam_ch, ma, hbl.frequency)
+            else:
+                psi["Up"] = self.solver(teuk_sys, bcUp, args = (hbl.kappa, hbl.s, hbl.eigenvalue, ma, hbl.frequency), domain = self.domain["Up"], **self.solver_kwargs["Up"])
+
+            if stab_in:
+                lam_flip = hbl.eigenvalue + 4.
+                y1_flip = 2.*hbl.kappa*xp.exp(-1.j*(2.*hbl.frequency - 0.5*ma/hbl.horizon)*(1. + hbl.kappa + 2.*xp.log(hbl.kappa)))
+                bcIn_flip = boundary_condition_in(hbl.kappa, -2, lam_flip, ma, omega, scale = y1_flip)
+                psi_flip = self.solver(teuk_sys, bcIn_flip, args = (hbl.kappa, -2, lam_flip, ma, hbl.frequency), domain = self.domain["In"], **self.solver_kwargs["In"])
+                psi["In"] = ts_in_minus_to_plus_2(psi_flip, hbl.kappa, lam_ch, ma, hbl.frequency)
+            else:
+                psi["In"] = self.solver(teuk_sys, bcIn, args = (hbl.kappa, hbl.s, hbl.eigenvalue, ma, hbl.frequency), domain = self.domain["In"], **self.solver_kwargs["In"])
         else:
             y0 = 1
             bcUp = static_boundary_condition_up(np.abs(hbl.s), hbl.l, scale = y0)

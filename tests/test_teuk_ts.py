@@ -149,6 +149,62 @@ def test_ts_in_route_is_refinement_stable():
     assert dir_drift > 100 * ts_drift
 
 
+def test_stabilize_flag_matches_manual_transform():
+    w, lam_m2, lam_p2, lam_ch = _eigs()
+    _, smin, smax = _geom()
+
+    hp, _, _ = _solve(150, 2, w, lam_p2)
+    manual_up = ts_up_plus_to_minus_2(hp.psi["Up"], KAPPA, lam_ch, M * A, w)
+    got_m2, _, _ = _solve(150, -2, w, lam_m2, stabilize=True)
+    sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
+    np.testing.assert_allclose(got_m2.psi["Up"](sig), manual_up(sig),
+                               rtol=1e-13)
+
+    hm, _, si = _solve(150, -2, w, lam_m2)
+    manual_in = ts_in_minus_to_plus_2(hm.psi["In"], KAPPA, lam_ch, M * A, w)
+    got_p2, _, _ = _solve(150, 2, w, lam_p2, stabilize=True)
+    sigI = np.linspace(si[-1] + 0.01, 0.99, 25)
+    np.testing.assert_allclose(got_p2.psi["In"](sigI), manual_in(sigI),
+                               rtol=1e-13)
+
+
+def test_stabilize_leaves_the_stable_branch_untouched():
+    # s=-2 In and s=+2 Up are already stable; the flag must not touch them
+    w, lam_m2, lam_p2, lam_ch = _eigs()
+    _, smin, smax = _geom()
+    off_m2, _, si = _solve(150, -2, w, lam_m2)
+    on_m2, _, _ = _solve(150, -2, w, lam_m2, stabilize=True)
+    sigI = np.linspace(si[-1] + 0.01, 0.99, 25)
+    np.testing.assert_array_equal(on_m2.psi["In"](sigI),
+                                  off_m2.psi["In"](sigI))
+
+    off_p2, _, _ = _solve(150, 2, w, lam_p2)
+    on_p2, _, _ = _solve(150, 2, w, lam_p2, stabilize=True)
+    sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
+    np.testing.assert_array_equal(on_p2.psi["Up"](sig), off_p2.psi["Up"](sig))
+
+
+def test_stabilize_is_off_by_default():
+    # default must remain the unstabilized path, bit for bit
+    w, lam_m2, lam_p2, lam_ch = _eigs()
+    _, _, smax = _geom()
+    sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
+    a, _, _ = _solve(150, -2, w, lam_m2)
+    b, _, _ = _solve(150, -2, w, lam_m2, stabilize=False)
+    np.testing.assert_array_equal(a.psi["Up"](sig), b.psi["Up"](sig))
+
+
+def test_stabilize_noop_for_other_spins():
+    # s=0 has no TS partner here; the flag must fall through untouched
+    w, lam_m2, lam_p2, lam_ch = _eigs()
+    _, _, smax = _geom()
+    lam0 = swsh_eigenvalue(0, L, M, A * w)
+    sig = np.linspace(0.02 * smax, 0.98 * smax, 25)
+    off, _, _ = _solve(150, 0, w, lam0)
+    on, _, _ = _solve(150, 0, w, lam0, stabilize=True)
+    np.testing.assert_array_equal(on.psi["Up"](sig), off.psi["Up"](sig))
+
+
 @pytest.mark.parametrize("branch", ["Up", "In"])
 def test_ts_first_derivative_is_refinement_stable(branch):
     # psi' is the other quantity the source integrator consumes (it builds
