@@ -135,27 +135,43 @@ def generic_samples(orbit, nsamples=2**10, ntheta=2**8):
 
 # ---- equatorial spheroidal-harmonic values (host basis, batched dot) ---------
 
+@functools.lru_cache(maxsize=8192)
+def _equatorial_basis(s, m, lmin, nterms):
+    """Y-basis row [Y_{s, lmin+j, m}(pi/2)]_j and its theta-derivative.
+
+    Depends only on (s, m, lmin, nterms), so it is cached: the table is
+    otherwise rebuilt for every memory chunk and every adaptive flux round,
+    and building it is ~99% of equatorial_swsh_values' cost (measured 2.2 s
+    at lmax=60 vs 12 ms for the batch bookkeeping).
+    """
+    z = np.array([0.0])
+    basis = np.array([sphericalY_expansion(s, lmin + j, m, z)[0]
+                      for j in range(nterms)])
+    dbasis = np.array([sphericalY_expansion_deriv(s, lmin + j, m, z)[0]
+                       for j in range(nterms)])
+    return basis, dbasis
+
+
 def equatorial_swsh_values(s, m_arr, lmin_arr, coeffs, eigenvalues, gamma_arr):
     """S, dS/dtheta, d2S/dtheta2 at theta = pi/2 for a batch of modes.
 
     coeffs (B, nterms) from spheroidal_eigs_batched; the Y-basis rows are
-    built on host per unique (m, lmin). d2S comes from the angular ODE
-    (swsh.deriv2), whose cot(theta) term vanishes at the equator.
+    built (and cached) on host per unique (m, lmin), then gathered to the
+    batch and contracted -- no per-key masking of the (B, nterms) array.
+    d2S comes from the angular ODE (swsh.deriv2), whose cot(theta) term
+    vanishes at the equator.
     """
     coeffs = np.asarray(coeffs)
     B, nterms = coeffs.shape
-    S = np.empty(B)
-    dS = np.empty(B)
-    z = np.array([0.0])
-    for key in {(int(m), int(lm)) for m, lm in zip(m_arr, lmin_arr)}:
-        m, lmin = key
-        sel = (m_arr == m) & (lmin_arr == lmin)
-        basis = np.array([sphericalY_expansion(s, lmin + j, m, z)[0]
-                          for j in range(nterms)])
-        dbasis = np.array([sphericalY_expansion_deriv(s, lmin + j, m, z)[0]
-                           for j in range(nterms)])
-        S[sel] = coeffs[sel] @ basis
-        dS[sel] = coeffs[sel] @ dbasis
+    pairs = np.stack([np.asarray(m_arr, dtype=np.int64),
+                      np.asarray(lmin_arr, dtype=np.int64)], axis=1)
+    uniq, inv = np.unique(pairs, axis=0, return_inverse=True)
+    tab = np.array([_equatorial_basis(s, int(m), int(lm), nterms)[0]
+                    for m, lm in uniq])
+    dtab = np.array([_equatorial_basis(s, int(m), int(lm), nterms)[1]
+                     for m, lm in uniq])
+    S = np.einsum("bj,bj->b", coeffs, tab[inv])
+    dS = np.einsum("bj,bj->b", coeffs, dtab[inv])
     g_eq = (-gamma_arr**2 - (np.asarray(m_arr) + 0.0)**2 + s
             + 2 * np.asarray(m_arr) * gamma_arr + eigenvalues)
     d2S = -g_eq * S

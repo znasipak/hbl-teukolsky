@@ -1,6 +1,8 @@
 # End-to-end batched pipeline: mode table -> eigenvalues, homogeneous
 # solutions, amplitudes; plus a circular-grid wrapper that reproduces the
 # CPU TeukolskyPointParticleModeGridGenerator output. See dev/PHASE4.md.
+import contextlib
+import time
 from typing import NamedTuple
 
 import jax
@@ -23,6 +25,44 @@ from .teukolsky import HomogeneousBatch, solve_homogeneous_batch
 # _K_RAD live (B, ndomains, nnodes) arrays in the radial stage.
 _K_SRC = 58
 _K_RAD = 8
+
+# ---- optional per-stage profiling -------------------------------------------
+# The benchmark used to infer source-stage cost as (total - swsh - radial),
+# timing swsh/radial as separate *unchunked* calls. That attributes any
+# chunked-vs-unchunked difference to "source" and made the reported scaling
+# unreliable at high lmax (2/7/15 chunks at lmax 20/40/60). Time the stages
+# where they actually run instead. Off by default; zero overhead when off.
+_PROFILE = {"on": False, "times": {}}
+
+
+@contextlib.contextmanager
+def profile_stages():
+    """Collect per-stage wall time inside the pipeline.
+
+    with profile_stages() as t:
+        solve_mode_table(...)
+    # t == {"swsh": ..., "radial": ..., "angular": ..., "source": ...}
+
+    Each stage blocks on its device output, so the numbers are real rather
+    than dispatch time; that makes the total slightly slower than an
+    unprofiled run.
+    """
+    prev_on, prev_times = _PROFILE["on"], _PROFILE["times"]
+    _PROFILE["on"], _PROFILE["times"] = True, {}
+    try:
+        yield _PROFILE["times"]
+    finally:
+        _PROFILE["on"], _PROFILE["times"] = prev_on, prev_times
+
+
+def _stage(name, fn, *args, **kwargs):
+    if not _PROFILE["on"]:
+        return fn(*args, **kwargs)
+    t0 = time.perf_counter()
+    out = jax.block_until_ready(fn(*args, **kwargs))
+    _PROFILE["times"][name] = (_PROFILE["times"].get(name, 0.0)
+                               + time.perf_counter() - t0)
+    return out
 
 
 def _per_mode_bytes(nsamples, ndomains, nnodes):
@@ -98,17 +138,18 @@ def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
     samples = orbit_samples(orbit, nsamples=nsamples)
 
     def solve_chunk(idx):
-        lam, coupling, lmin = spheroidal_eigs_batched(s, l[idx], m[idx],
-                                                      g[idx], nmax=nmax)
+        lam, coupling, lmin = _stage("swsh", spheroidal_eigs_batched,
+                                     s, l[idx], m[idx], g[idx], nmax=nmax)
         lam = np.asarray(lam)
-        hom = solve_homogeneous_batch(s, kappa, lam, m[idx] * a, omega[idx],
-                                      subs_up, subs_in, n=nnodes,
-                                      stabilize=stabilize)
-        S, dS, d2S = equatorial_swsh_values(s, m[idx], lmin,
-                                            np.asarray(coupling), lam, g[idx])
-        src = integrate_source_batch(samples, lam, m[idx], n[idx],
-                                     omega[idx], S, dS, d2S,
-                                     hom, subs_up, subs_in, method=method)
+        hom = _stage("radial", solve_homogeneous_batch,
+                     s, kappa, lam, m[idx] * a, omega[idx],
+                     subs_up, subs_in, n=nnodes, stabilize=stabilize)
+        S, dS, d2S = _stage("angular", equatorial_swsh_values,
+                            s, m[idx], lmin, np.asarray(coupling), lam,
+                            g[idx])
+        src = _stage("source", integrate_source_batch,
+                     samples, lam, m[idx], n[idx], omega[idx], S, dS, d2S,
+                     hom, subs_up, subs_in, method=method)
         return lam, np.asarray(coupling), lmin, hom, src
 
     B = len(l)
