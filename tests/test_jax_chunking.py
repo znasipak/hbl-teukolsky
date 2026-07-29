@@ -15,10 +15,14 @@ M = np.array([c[1] for c in MODES])
 N = np.array([c[2] for c in MODES])
 
 
-def budget_for_chunk(csize, nsamples=2**8, ndomains=40, nnodes=32):
+def budget_for_chunk(csize, nsamples=2**8, ndomains=40, nnodes=32,
+                     stabilize=False):
     # budget (GB) that yields exactly csize modes/chunk (+0.5 mode of
-    # headroom against float rounding in the division)
-    return (csize + 0.5) * _per_mode_bytes(nsamples, ndomains, nnodes) / 2**30
+    # headroom against float rounding in the division). stabilize must match
+    # what the solver under test uses: TS stabilization costs
+    # ndomains*nnodes^2 per mode, so the same budget buys ~6x fewer modes.
+    return ((csize + 0.5)
+            * _per_mode_bytes(nsamples, ndomains, nnodes, stabilize) / 2**30)
 
 
 def test_chunk_size_arithmetic():
@@ -34,8 +38,11 @@ def pair(orbit):
     kwargs = dict(nsamples=2**8, ndomains=40)
     full = solve_mode_table(orbit, -2, L, M, N, max_memory_gb=None, **kwargs)
     # ceil(45 / 10) = 5 chunks, ragged (padded) final chunk of 5 modes
+    # solve_mode_table stabilizes by default, so size the budget with the
+    # stabilized model or the intended 5-chunk split collapses to 45 chunks
     chunked = solve_mode_table(orbit, -2, L, M, N,
-                               max_memory_gb=budget_for_chunk(10), **kwargs)
+                               max_memory_gb=budget_for_chunk(
+                                   10, stabilize=True), **kwargs)
     return full, chunked
 
 
@@ -77,3 +84,15 @@ def test_return_radial_false(orbit, pair):
     np.testing.assert_allclose(np.asarray(slim.amplitudes),
                                np.asarray(full.amplitudes), rtol=1e-8)
     np.testing.assert_allclose(slim.eigenvalues, full.eigenvalues, rtol=1e-13)
+
+
+def test_chunk_model_accounts_for_stabilization():
+    # Regression: the model omitted the TS collocation system, (B, ndomains,
+    # nnodes, nnodes), so enabling stabilization by default understated the
+    # working set several-fold and chunking stopped bounding memory (measured
+    # 23 GB peak against a 2 GB budget before this term was added).
+    plain = _per_mode_bytes(2**8, 150, 32, False)
+    stab = _per_mode_bytes(2**8, 150, 32, True)
+    assert stab > 5 * plain
+    assert _chunk_size(8.0, 2**8, 150, 32, True) < \
+        _chunk_size(8.0, 2**8, 150, 32, False) / 5

@@ -53,10 +53,6 @@ def solve_modes(orbit, s, l, m, k, n, **solver_kwargs):
         solver_kwargs.pop("nsamples", None)
         if ntheta is not None:
             solver_kwargs["nsamples"] = ntheta
-        # solve_spherical_mode_table predates chunking (no n-axis -> smallest
-        # tables); it has no max_memory_gb / return_radial parameters
-        solver_kwargs.pop("max_memory_gb", None)
-        solver_kwargs.pop("return_radial", None)
         sol = solve_spherical_mode_table(orbit, s, l, m, k, **solver_kwargs)
         return _as_generic(sol, k, np.zeros_like(l))
     return solve_generic_mode_table(orbit, s, l, m, k, n, **solver_kwargs)
@@ -127,9 +123,23 @@ def sum_fluxes(sol, orbit, tol=None, peak_edges=False):
             edge = v == v.max()           # outermost shell
         else:
             edge = (v == v.max()) | (v == v.min())
-        edge_report[axis] = np.array(
-            [np.abs(F[c][edge]).sum() / max(np.abs(F[c]).sum(), 1e-300)
-             for c in _CHANNELS])
+        # Relative to |total| per side, which is what "edge contribution <
+        # tol x total" actually means. The old denominator was sum|F_per-mode|,
+        # which is inflated wherever per-mode contributions cancel (retrograde
+        # and near-polar orbits especially) and so understated the edge
+        # fraction and stopped early. Numerator stays a magnitude sum, so the
+        # criterion is a bound rather than a signed near-cancellation.
+        fracs = []
+        for c in _CHANNELS:
+            tot = np.abs(totals[c])                       # (2,) per side
+            mag = np.abs(F[c]).sum(axis=0)                 # (2,) scale
+            edge_sum = np.abs(F[c][edge]).sum(axis=0)      # (2,)
+            # a channel that cancels to ~0 by symmetry (Qdot on an equatorial
+            # orbit) has no meaningful relative criterion -- treat as satisfied
+            active = tot > 1e-10 * np.maximum(mag, 1e-300)
+            fracs.append(float(np.where(
+                active, edge_sum / np.maximum(tot, 1e-300), 0.0).max()))
+        edge_report[axis] = np.array(fracs)
 
     converged = None
     if tol is not None:
@@ -225,7 +235,8 @@ def _bucketed_solve(orbit, s, arr, nsamples, ntheta, max_memory_gb,
               max_memory_gb=max_memory_gb, return_radial=False,
               stabilize=stabilize)
     if pad:
-        csize = _chunk_size(max_memory_gb, nsamples, ndomains, nnodes)
+        csize = _chunk_size(max_memory_gb, nsamples, ndomains, nnodes,
+                            stabilize)
         if csize is not None and B < csize:
             arr = arr[np.arange(csize) % B]      # first B rows == arr (csize>=B)
     sol = solve_modes(orbit, s, arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3],
@@ -401,7 +412,8 @@ class _Accum:
 
 def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
                  strategy="box", verbose=False, bucket="auto",
-                 stabilize=True):
+                 stabilize=True, k_cap=None, n_cap=None,
+                 max_modes=100_000):
     """Adaptive staged-round flux driver. strategy="box" grows a full
     rectangular canonical (l, m, k, n) window; strategy="peak" grows four
     knobs (k_ext, n_ext, dm, dl) around the spectral ridges l ~ |m+k| and
@@ -409,6 +421,17 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     orbits (dev/PHASE5E.md). Both stop when every axis'/knob's edge
     contribution < tol x total per channel, or lmax_cap (warns,
     converged=False).
+
+    k_cap / n_cap bound the k and n window growth (default 16x the initial
+    physics-motivated guess for box, 32/64 for the peak and gradient knobs).
+    Without them the loop was unbounded whenever l converged while k or n did
+    not; raise them for extreme orbits, e.g. very high eccentricity.
+
+    max_modes bounds the accumulated solved-mode count -- the guard that fires
+    first in practice. Memory is bounded independently by max_memory_gb (every
+    solver path chunks), so this is purely a time budget. Default 100k against
+    a largest-observed legitimate run of ~36k; raise it for hard orbits such as
+    near-polar inclinations, which genuinely need a wide k window.
 
     stabilize solves the branch whose radial march is unstable at this spin
     (Up for s=-2) at the opposite spin and maps it back with
@@ -426,16 +449,18 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     pad = _want_bucket(bucket)
     if strategy == "gradient":
         return _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb,
-                                      verbose, pad, stabilize)
+                                      verbose, pad, stabilize, k_cap, n_cap,
+                                  max_modes)
     if strategy == "peak":
         return _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb,
-                                  verbose, pad, stabilize)
+                                  verbose, pad, stabilize, k_cap, n_cap,
+                                  max_modes)
     return _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                             pad, stabilize)
+                             pad, stabilize, k_cap, n_cap, max_modes)
 
 
 def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                      pad=False, stabilize=True):
+                      pad=False, stabilize=True, k_cap=None, n_cap=None, max_modes=100_000):
     """Adaptive staged-round flux driver: grows a rectangular canonical
     (l, m, k, n) window in batched rounds until every axis' edge
     contribution < tol x running total per channel (l axis: last two
@@ -445,6 +470,20 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
     circular = orbit.e == 0
     k_half = 0 if equatorial else max(2, int(np.ceil(4 * (1 - abs(orbit.x)))) + 2)
     n_half = 0 if circular else max(3, int(np.ceil(10 * orbit.e / (1 - orbit.e))))
+    # k and n need caps of their own: lmax_cap alone left the loop unbounded
+    # whenever l converged while k or n did not (k_half *= 2 forever, with no
+    # diagnostic). Cap at 16x the physics-motivated initial guess -- four
+    # doublings, each of which multiplies the mode count -- so the bound
+    # scales with inclination and eccentricity instead of being a fixed number.
+    k_cap = 16 * max(k_half, 1) if k_cap is None else k_cap
+    n_cap = 16 * max(n_half, 1) if n_cap is None else n_cap
+    # Grow additively by the initial (physics-motivated) half-width rather than
+    # doubling: doubling adds a geometrically increasing number of modes per
+    # round, which overshoots badly and -- on a near-polar orbit, where the k
+    # window is already wide -- explodes. peak/gradient size their own steps
+    # adaptively, so this applies to the box window only.
+    k_step0 = max(k_half, 1)
+    n_step0 = max(n_half, 1)
     lmax = 4
     acc = _Accum()
     rounds = []
@@ -475,9 +514,15 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
         # magnitudes over both flux sides combined in the criterion)
         def slab_frac(lv):
             sel = acc.l == lv
-            return max(np.abs(summary.table[c][sel]).sum()
-                       / max(np.abs(summary.table[c]).sum(), 1e-300)
-                       for c in _CHANNELS)
+            out = 0.0
+            for c in _CHANNELS:
+                tot = np.abs(getattr(summary, c))               # (2,)
+                mag = np.abs(summary.table[c]).sum(axis=0)
+                slab = np.abs(summary.table[c][sel]).sum(axis=0)
+                active = tot > 1e-10 * np.maximum(mag, 1e-300)
+                out = max(out, float(np.where(
+                    active, slab / np.maximum(tot, 1e-300), 0.0).max()))
+            return out
         l_done = (slab_frac(lmax) < tol) and (slab_frac(lmax - 1) < tol)
         k_done = "k" not in summary.edge_report or \
             all(f < tol for f in summary.edge_report["k"])
@@ -486,27 +531,46 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
         if l_done and k_done and n_done:
             return summary._replace(rounds=tuple(rounds))
-        if not l_done and lmax >= lmax_cap:
-            warnings.warn(f"total_fluxes hit lmax_cap={lmax_cap} before "
-                          "converging; results are truncated", UserWarning)
+        if len(acc.l) >= max_modes:
+            warnings.warn(
+                f"total_fluxes reached max_modes={max_modes} "
+                f"({len(acc.l)} solved) before converging; results are "
+                "truncated. Growth is geometric in k and n, so raise "
+                "max_modes only if you intend the cost", UserWarning)
+            conv = {c: False for c in _CHANNELS}
+            return summary._replace(converged=conv, rounds=tuple(rounds))
+        stuck = [nm for nm, done, v, cap in
+                 (("l", l_done, lmax, lmax_cap), ("k", k_done, k_half, k_cap),
+                  ("n", n_done, n_half, n_cap)) if not done and v >= cap]
+        if stuck:
+            warnings.warn(
+                f"total_fluxes stalled on axis {'/'.join(stuck)} at its cap "
+                f"(lmax={lmax}/lmax_cap={lmax_cap}, "
+                f"k_half={k_half}/k_cap={k_cap}, "
+                f"n_half={n_half}/n_cap={n_cap}) before converging; results "
+                "are truncated -- raise that cap if you intend the cost",
+                UserWarning)
             conv = {c: False for c in _CHANNELS}
             return summary._replace(converged=conv, rounds=tuple(rounds))
         if not l_done:
             lmax = min(lmax + 2, lmax_cap)
         if not k_done:
-            k_half *= 2
+            k_half = min(k_half + k_step0, k_cap)
         if not n_done:
-            n_half *= 2
+            n_half = min(n_half + n_step0, n_cap)
 
 
 def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                       pad=False, stabilize=True):
+                       pad=False, stabilize=True, k_cap=None, n_cap=None, max_modes=100_000):
     # iterate (l, m) naturally to lmax; band k, n around their (l, m)-peaks
     # with half-widths dk, dn. Three adaptive knobs. l uses the box two-slab
     # rule; dk/dn grow while their outermost offset shell contributes > tol.
     lmax = 4
     dk = 2
     dn = 4
+    # dk/dn grow additively and were previously unbounded
+    dk_cap = 32 if k_cap is None else k_cap
+    dn_cap = 64 if n_cap is None else n_cap
     acc = _Accum()
     rounds = []
 
@@ -572,22 +636,36 @@ def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
         if l_done and dk_done and dn_done:
             return summary._replace(rounds=tuple(rounds))
-        if not l_done and lmax >= lmax_cap:
-            warnings.warn(f"total_fluxes hit lmax_cap={lmax_cap} before "
-                          "converging; results are truncated", UserWarning)
+        if len(acc.l) >= max_modes:
+            warnings.warn(
+                f"total_fluxes reached max_modes={max_modes} "
+                f"({len(acc.l)} solved) before converging; results are "
+                "truncated. Growth is geometric in k and n, so raise "
+                "max_modes only if you intend the cost", UserWarning)
+            conv = {c: False for c in _CHANNELS}
+            return summary._replace(converged=conv, rounds=tuple(rounds))
+        stuck = [nm for nm, done, v, cap in
+                 (("l", l_done, lmax, lmax_cap), ("dk", dk_done, dk, dk_cap),
+                  ("dn", dn_done, dn, dn_cap)) if not done and v >= cap]
+        if stuck:
+            warnings.warn(
+                f"total_fluxes stalled on knob {'/'.join(stuck)} at its cap "
+                f"(lmax={lmax}/lmax_cap={lmax_cap}, dk={dk}/{dk_cap}, "
+                f"dn={dn}/{dn_cap}) before converging; results are truncated "
+                "-- raise that cap if you intend the cost", UserWarning)
             conv = {c: False for c in _CHANNELS}
             return summary._replace(converged=conv, rounds=tuple(rounds))
         # grow only the un-converged knobs, each by its own proportional step
         if not l_done:
             lmax = min(lmax + l_step, lmax_cap)
         if not dk_done:
-            dk += dk_step
+            dk = min(dk + dk_step, dk_cap)
         if not dn_done:
-            dn += dn_step
+            dn = min(dn + dn_step, dn_cap)
 
 
 def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                           pad=False, stabilize=True):
+                           pad=False, stabilize=True, k_cap=None, n_cap=None, max_modes=100_000):
     """Decay-predicted adaptive driver. Grows four directions (L, M, K, N),
     each to the extent its estimated geometric flux tail needs to fall under
     tol/n_dir of the per-channel total; stops on max(predicted_tail,
@@ -598,6 +676,10 @@ def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
     circular = orbit.e == 0
     lmax = 4
     dm, dk, dn = 2, (0 if equatorial else 2), (0 if circular else 4)
+    # additive growth, previously unbounded
+    dm_cap = 32
+    dk_cap = 32 if k_cap is None else k_cap
+    dn_cap = 64 if n_cap is None else n_cap
     c_m = _m_center_seed(orbit, lmax)
     acc = _Accum()
     rounds = []
@@ -673,19 +755,36 @@ def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
         if l_done and m_done and k_done and n_done and not m_grow:
             return summary._replace(rounds=tuple(rounds))
-        if not l_done and lmax >= lmax_cap:
-            warnings.warn(f"total_fluxes hit lmax_cap={lmax_cap} before "
-                          "converging; results are truncated", UserWarning)
+        if len(acc.l) >= max_modes:
+            warnings.warn(
+                f"total_fluxes reached max_modes={max_modes} "
+                f"({len(acc.l)} solved) before converging; results are "
+                "truncated. Growth is geometric in k and n, so raise "
+                "max_modes only if you intend the cost", UserWarning)
+            conv = {c: False for c in _CHANNELS}
+            return summary._replace(converged=conv, rounds=tuple(rounds))
+        stuck = [nm for nm, done, v, cap in
+                 (("l", l_done, lmax, lmax_cap),
+                  ("dm", m_done and not m_grow, dm, dm_cap),
+                  ("dk", k_done, dk, dk_cap), ("dn", n_done, dn, dn_cap))
+                 if not done and v >= cap]
+        if stuck:
+            warnings.warn(
+                f"total_fluxes stalled on direction {'/'.join(stuck)} at its "
+                f"cap (lmax={lmax}/lmax_cap={lmax_cap}, dm={dm}/{dm_cap}, "
+                f"dk={dk}/{dk_cap}, dn={dn}/{dn_cap}) before converging; "
+                "results are truncated -- raise that cap if you intend the "
+                "cost", UserWarning)
             conv = {c: False for c in _CHANNELS}
             return summary._replace(converged=conv, rounds=tuple(rounds))
         if not l_done:
             lmax = min(lmax + max(l_step, 1), lmax_cap)
         if m_grow or not m_done:
-            dm += max(m_step, 1)
+            dm = min(dm + max(m_step, 1), dm_cap)
         if not k_done:
-            dk += max(k_step, 1)
+            dk = min(dk + max(k_step, 1), dk_cap)
         if not n_done:
-            dn += max(n_step, 1)
+            dn = min(dn + max(n_step, 1), dn_cap)
 
 
 def flux_efficiency(summary, tol):

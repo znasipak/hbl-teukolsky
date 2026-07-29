@@ -443,3 +443,39 @@ def test_decay_step_safety_gate_blocks_early_stop():
 def test_total_fluxes_gradient_bad_strategy_message(orb_ecc_eq):
     with pytest.raises(ValueError, match="gradient"):
         total_fluxes(orb_ecc_eq, strategy="nope")
+
+
+# --- retrograde orbits and driver termination guards ---
+
+@pytest.mark.parametrize("orbit_args", [(A, 10.0, 0.2, -1.0),    # equatorial
+                                        (A, 12.0, 0.0, -0.5)])   # spherical
+def test_total_fluxes_retrograde_converges(orbit_args):
+    # x < 0 makes Ldot (and for equatorial, Qdot) negative. The edge and
+    # budget checks are magnitude-based (np.abs) throughout, so sign must not
+    # affect convergence -- these orbits must terminate normally.
+    got = total_fluxes(MiniGeo(*orbit_args), tol=1e-4, strategy="box")
+    assert all(got.converged.values())
+    assert got.Ldot[0] < 0                      # retrograde: negative Ldot
+    assert got.Edot[0] > 0                       # energy flux stays positive
+
+
+@pytest.mark.parametrize("strategy", ["box", "peak", "gradient"])
+def test_driver_stops_when_k_axis_stalls(strategy):
+    # Regression: only lmax had a cap, so if l converged while k did not the
+    # loop grew k without bound and never returned. Force k to stall with l
+    # converging, and require a return plus a warning naming the stuck axis.
+    with pytest.warns(UserWarning, match="stalled on"):
+        got = total_fluxes(MiniGeo(A, 12.0, 0.0, -0.5), tol=1e-4,
+                           strategy=strategy, k_cap=4)
+    assert not all(got.converged.values())
+    assert len(got.rounds) < 20                  # bounded, not runaway
+
+
+@pytest.mark.parametrize("strategy", ["box", "peak", "gradient"])
+def test_driver_stops_at_max_modes(strategy):
+    # k and n windows can both double per round, so the per-axis caps still
+    # permit impractically large runs; max_modes is the guard that fires first.
+    with pytest.warns(UserWarning, match="max_modes"):
+        got = total_fluxes(MiniGeo(A, 12.0, 0.0, -0.5), tol=1e-12,
+                           strategy=strategy, max_modes=500)
+    assert not all(got.converged.values())

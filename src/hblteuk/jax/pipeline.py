@@ -65,16 +65,29 @@ def _stage(name, fn, *args, **kwargs):
     return out
 
 
-def _per_mode_bytes(nsamples, ndomains, nnodes):
-    return (_K_SRC * nsamples + _K_RAD * ndomains * nnodes) * 16
+# Teukolsky-Starobinsky stabilization materializes the target-spin collocation
+# system per subdomain, (B, ndomains, nnodes, nnodes), and jnp.linalg.solve
+# copies it -- so it costs ndomains*nnodes^2 per mode, not ndomains*nnodes. At
+# (150, 32) that is 2.5 MB/mode against 1.0 MB/mode for everything else, so
+# omitting it (as this model did when stabilize became the default) understates
+# the working set by ~6x. Counts M, its LU copy, and one build temporary.
+_K_TS = 3
 
 
-def _chunk_size(max_memory_gb, nsamples, ndomains, nnodes):
+def _per_mode_bytes(nsamples, ndomains, nnodes, stabilize=False):
+    b = (_K_SRC * nsamples + _K_RAD * ndomains * nnodes) * 16
+    if stabilize:
+        b += _K_TS * ndomains * nnodes * nnodes * 16
+    return b
+
+
+def _chunk_size(max_memory_gb, nsamples, ndomains, nnodes, stabilize=False):
     """Modes per chunk under the budget; None disables chunking."""
     if max_memory_gb is None:
         return None
     return max(1, int(max_memory_gb * 2**30
-                      // _per_mode_bytes(nsamples, ndomains, nnodes)))
+                      // _per_mode_bytes(nsamples, ndomains, nnodes,
+                                         stabilize)))
 
 
 class ModeTableSolution(NamedTuple):
@@ -153,7 +166,8 @@ def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
         return lam, np.asarray(coupling), lmin, hom, src
 
     B = len(l)
-    csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1, nnodes)
+    csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1,
+                        nnodes, stabilize)
     if csize is None or csize >= B:
         lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
         amplitudes, errors = src.amplitudes, src.errors
@@ -216,7 +230,8 @@ class SphericalModeSolution(NamedTuple):
 
 def solve_spherical_mode_table(orbit, s, l, m, k, subdomains=None,
                                ndomains=150, nnodes=32, spacing="arcsinh7",
-                               nsamples=2**8, method="fft", stabilize=True):
+                               nsamples=2**8, method="fft", stabilize=True,
+                               max_memory_gb=8.0, return_radial=True):
     """Solve a radiative (s = -2) spherical-inclined mode table end to end.
 
     orbit: MiniGeo with e = 0 (any |x| <= 1). l, m, k: (B,) integers;
@@ -245,21 +260,67 @@ def solve_spherical_mode_table(orbit, s, l, m, k, subdomains=None,
     else:
         subs_up, subs_in = subdomains
 
-    lam, coupling, lmin = spheroidal_eigs_batched(s, l, m, a * omega)
-    lam = np.asarray(lam)
-    hom = solve_homogeneous_batch(s, kappa, lam, m * a, omega,
-                                  subs_up, subs_in, n=nnodes,
-                                  stabilize=stabilize)
     samples = polar_samples(orbit, nsamples=nsamples)
-    S, dS, d2S = polar_swsh_values(s, m, lmin, np.asarray(coupling), lam,
-                                   a * omega, samples.thp)
-    src = integrate_source_spherical_batch(samples, lam, m, k, omega,
-                                           S, dS, d2S, hom, subs_up, subs_in,
-                                           method=method)
+    g = a * omega
+    # table-global spheroidal truncation, pinned across chunks so chunking
+    # cannot change per-mode results or coupling widths at chunk boundaries
+    lmin_all = np.maximum(abs(s), np.abs(m))
+    nmax = int(np.max((l - lmin_all) + np.round(20 + 2 * np.abs(g)) + 2))
+
+    def solve_chunk(idx):
+        lam, coupling, lmin = _stage("swsh", spheroidal_eigs_batched,
+                                     s, l[idx], m[idx], g[idx], nmax=nmax)
+        lam = np.asarray(lam)
+        hom = _stage("radial", solve_homogeneous_batch,
+                     s, kappa, lam, m[idx] * a, omega[idx],
+                     subs_up, subs_in, n=nnodes, stabilize=stabilize)
+        S, dS, d2S = _stage("angular", polar_swsh_values,
+                            s, m[idx], lmin, np.asarray(coupling), lam,
+                            g[idx], samples.thp)
+        src = _stage("source", integrate_source_spherical_batch,
+                     samples, lam, m[idx], k[idx], omega[idx], S, dS, d2S,
+                     hom, subs_up, subs_in, method=method)
+        return lam, np.asarray(coupling), lmin, hom, src
+
+    # This path was previously unchunked, so a large table allocated its whole
+    # working set at once -- the adaptive driver on a near-polar orbit grew the
+    # k window until that exhausted host memory. Chunk it like solve_mode_table.
+    B = len(l)
+    csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1,
+                        nnodes, stabilize)
+    if csize is None or csize >= B:
+        lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
+        amplitudes, errors = src.amplitudes, src.errors
+        if not return_radial:
+            hom = None
+    else:
+        lams, coups, lmins, homs, amps, errs = [], [], [], [], [], []
+        for start in range(0, B, csize):
+            idx = np.arange(start, min(start + csize, B))
+            keep = len(idx)
+            if keep < csize:  # pad so every chunk reuses one compiled trace
+                idx = np.concatenate([idx, np.full(csize - keep, idx[-1])])
+            lam_c, coup_c, lmin_c, hom_c, src_c = solve_chunk(idx)
+            lams.append(lam_c[:keep])
+            coups.append(coup_c[:keep])
+            lmins.append(lmin_c[:keep])
+            amps.append(np.asarray(src_c.amplitudes)[:keep])
+            errs.append(np.asarray(src_c.errors)[:keep])
+            if return_radial:
+                homs.append(HomogeneousBatch(*(np.asarray(x)[:keep]
+                                               for x in hom_c)))
+        lam = np.concatenate(lams)
+        coupling = np.concatenate(coups)
+        lmin = np.concatenate(lmins)
+        amplitudes = np.concatenate(amps)
+        errors = np.concatenate(errs)
+        hom = (HomogeneousBatch(*(np.concatenate([h[i] for h in homs])
+                                  for i in range(len(HomogeneousBatch._fields))))
+               if return_radial else None)
+
     return SphericalModeSolution(l, m, k, omega, lam, np.asarray(coupling),
                                  lmin, hom, np.asarray(subs_up),
-                                 np.asarray(subs_in),
-                                 src.amplitudes, src.errors)
+                                 np.asarray(subs_in), amplitudes, errors)
 
 
 def solve_circular_grid(orbit, s, lrange, cpu_grid_generator,
@@ -431,7 +492,8 @@ def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
         return lam, np.asarray(coupling), lmin, hom, src
 
     B = len(l)
-    csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1, nnodes)
+    csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1,
+                        nnodes, stabilize)
     if csize is None or csize >= B:
         lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
         amplitudes, errors = src.amplitudes, src.errors
