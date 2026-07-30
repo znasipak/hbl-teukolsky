@@ -32,10 +32,10 @@ def _check_uth_matches_dtheta_dlambda(geo):
     q = q[np.abs(np.sin(q)) > 0.1]        # keep away from turning points
     dq = 1e-6
     dth = (geo.th(q + dq) - geo.th(q - dq)) / (2 * dq)
-    # mino_frequencies[2] stores |Upsilon_theta| (pybhpt convention); the
-    # true signed Mino frequency for this identity is _uth_sign * that.
-    upsTh_signed = geo._uth_sign * geo.mino_frequencies[2]
-    np.testing.assert_allclose(geo.uth(q), upsTh_signed * dth, atol=1e-4)
+    # uth is in the |Upsilon_theta| convention (unsigned) to match the qth
+    # parameterization and pybhpt; true dtheta/dlambda is _ups_th_sign * uth.
+    np.testing.assert_allclose(geo.uth(q), geo.mino_frequencies[2] * dth,
+                               atol=1e-4)
 
 
 def test_uth_matches_dtheta_dlambda(sph):
@@ -43,9 +43,8 @@ def test_uth_matches_dtheta_dlambda(sph):
 
 
 def test_uth_matches_dtheta_dlambda_retrograde(sph_retro):
-    # locks in the sign(Upsilon_theta) factor found in Task 1: without it
-    # this fails by O(1) for retrograde orbits, not by numerical noise
-    assert sph_retro._uth_sign < 0
+    # handedness is still recorded, just not applied to uth
+    assert sph_retro._ups_th_sign < 0
     _check_uth_matches_dtheta_dlambda(sph_retro)
 
 
@@ -70,9 +69,14 @@ def test_uth_sign_convention(sph):
 
 
 def test_uth_sign_convention_retrograde(sph_retro):
-    # retrograde: Upsilon_theta < 0 flips the sign relative to the prograde case
-    assert sph_retro.uth(1.0) < 0
-    assert sph_retro.uth(2 * np.pi - 1.0) > 0
+    # REGRESSION: uth must have the SAME sign as prograde. mino_frequencies[2]
+    # stores |Upsilon_theta| (pybhpt's omega convention), so qth is
+    # parameterized by the unsigned frequency and the polar velocity must be
+    # too. Applying sign(Upsilon_theta) here while using |Upsilon_theta| for
+    # omega mixed handedness and left retrograde inclined amplitudes wrong by
+    # 0.1-58x versus pybhpt; unsigned agrees exactly. See geo.MiniGeo.uth.
+    assert sph_retro.uth(1.0) > 0
+    assert sph_retro.uth(2 * np.pi - 1.0) < 0
     assert abs(sph_retro.uth(0.0)) < 1e-12
 
 

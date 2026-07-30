@@ -169,7 +169,7 @@ def test_stabilized_amplitudes_tighten_the_pybhpt_gate():
     import pathlib
     from hblteuk.jax import solve_mode_table
     ref = np.load(pathlib.Path(__file__).parent / "golden"
-                  / "pybhpt_reference_v1.npz")
+                  / "pybhpt_reference_v2.npz")
     C = dict(l=0, m=1, n=2, zin_re=5, zin_im=6, zup_re=7, zup_im=8)
     for tag in ("ecc", "circ"):
         t = ref[f"{tag}_table"]

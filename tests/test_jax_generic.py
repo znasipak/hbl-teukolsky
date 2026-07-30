@@ -17,7 +17,7 @@ from hblteuk.jax.source import (generic_samples,
                                 polar_swsh_values)
 from hblteuk.teuk import sigma_r
 
-REF_PATH = pathlib.Path(__file__).parent / "golden" / "pybhpt_reference_v1.npz"
+REF_PATH = pathlib.Path(__file__).parent / "golden" / "pybhpt_reference_v2.npz"
 COLS = dict(l=0, m=1, k=2, n=3, omega=4, lam=5, zin_re=6, zin_im=7,
             zup_re=8, zup_im=9, edot_i=10, edot_h=11, ldot_i=12, ldot_h=13,
             qdot_i=14, qdot_h=15)

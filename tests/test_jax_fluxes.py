@@ -12,7 +12,7 @@ from hblteuk.jax import flux_modes, solve_mode_table
 from hblteuk.jax.fluxes import teukolsky_starobinsky_abs_C_squared
 from hblteuk.teuk import teukolsky_starobinsky_constant_D_squared
 
-REF_PATH = pathlib.Path(__file__).parent / "golden" / "pybhpt_reference_v1.npz"
+REF_PATH = pathlib.Path(__file__).parent / "golden" / "pybhpt_reference_v2.npz"
 COLS = dict(l=0, m=1, n=2, omega=3, lam=4, zin_re=5, zin_im=6,
             zup_re=7, zup_im=8, edot_i=9, edot_h=10, ldot_i=11, ldot_h=12)
 

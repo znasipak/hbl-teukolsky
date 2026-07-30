@@ -28,10 +28,10 @@ class MiniGeo:
         self.radial_solutions = kg.stable.radial_solutions(a, self.constants, self.radial_roots)
         self.polar_roots = kg.stable.stable_polar_roots(a, p, e, x, self.constants)
         self.polar_solutions = kg.stable.polar_solutions(a, self.constants, self.polar_roots)
-        # sign(Upsilon_theta): kerrgeopy signs it by prograde/retrograde but
-        # generate_frequencies above stores |Upsilon_theta| to match pybhpt;
-        # uth() needs the true signed value (cheap formula eval, not a solve).
-        self._uth_sign = float(np.sign(
+        # Recorded handedness of Upsilon_theta (kerrgeopy signs it by
+        # prograde/retrograde; generate_frequencies above stores |Upsilon_theta|
+        # to match pybhpt). NOT applied to uth() -- see uth() for why.
+        self._ups_th_sign = float(np.sign(
             kg.frequencies.theta_frequency(a, p, e, x, self.constants)))
 
     @property
@@ -71,14 +71,28 @@ class MiniGeo:
         return self.polar_solutions[2](qth)
 
     def uth(self, qth, z = None):
-        # z = cos(theta); signed d(theta)/d(lambda). Positive on qth in
-        # (0, pi) when Upsilon_theta > 0 (prograde), negative when
-        # retrograde -- see dev/PHASE5B.md for the sign convention.
+        r"""Polar velocity in the |Upsilon_theta| convention: positive on
+        qth in (0, pi) for BOTH prograde and retrograde orbits.
+
+        This is |Upsilon_theta| * dtheta/dqth, not the signed dtheta/dlambda.
+        The distinction matters and was a bug: mino_frequencies[2] stores
+        |Upsilon_theta| (pybhpt's mode_frequency convention), so qth is
+        parameterized by the unsigned frequency, and the polar velocity has to
+        be in that same convention or the source integral mixes handedness.
+        Applying sign(Upsilon_theta) here while using |Upsilon_theta| for omega
+        left retrograde inclined amplitudes wrong by factors of 0.1-58x versus
+        pybhpt; dropping it makes them agree exactly (ratio 1.0000, phase 0).
+        Prograde was unaffected because sign(Upsilon_theta) = +1 there, which
+        is why this hid until a retrograde orbit was validated.
+
+        The signed handedness is still available as _ups_th_sign for anyone
+        who needs true dtheta/dlambda = _ups_th_sign * uth().
+        """
         if z is None:
             z = np.cos(self.th(qth))
         Vth = self.Qc - z**2 * (self.a**2 * (1 - self.En**2)
                                 + self.Lz**2 / (1 - z**2))
-        return self._uth_sign * np.sign(np.sin(qth)) * np.sqrt(np.abs(Vth))
+        return np.sign(np.sin(qth)) * np.sqrt(np.abs(Vth))
 
     def r_velocity(self, qr):
         rr = self.r(qr)

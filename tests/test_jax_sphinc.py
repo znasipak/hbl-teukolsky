@@ -16,7 +16,7 @@ from hblteuk.jax.source import (integrate_source_spherical_batch,
 from hblteuk.swsh import SpinWeightedSpheroidalHarmonic
 from hblteuk.teuk import sigma_r
 
-REF_PATH = pathlib.Path(__file__).parent / "golden" / "pybhpt_reference_v1.npz"
+REF_PATH = pathlib.Path(__file__).parent / "golden" / "pybhpt_reference_v2.npz"
 COLS = dict(l=0, m=1, k=2, omega=3, lam=4, zin_re=5, zin_im=6,
             zup_re=7, zup_im=8, edot_i=9, edot_h=10, ldot_i=11, ldot_h=12)
 
