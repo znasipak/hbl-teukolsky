@@ -17,7 +17,7 @@ import numpy.polynomial.chebyshev as ch
 #import scipy
 import time
 # from swsh import swsh_eigenvalue
-from spheroidal import eigenvalue
+from spheroidal import eigenvalue as spheroidal_eigenvalue
 
 """
 GLOBAL VARIABLES
@@ -440,7 +440,7 @@ class RadialTeukolskySolution:
     
     def _repr_latex_(self):
         bc_str = str(self.bc)
-        sub_str = "{}, {}, {}, {:.2f}".format(self.s, self.l, self.m, self.frequency)
+        sub_str = "{}, {}, {}, {:.2f}, {:.2f}".format(self.s, self.l, self.m, self.a, self.frequency)
         domain_str = "[{:.2f}, {:.2f}]".format(self.domain[0], self.domain[1])
         return r'{$R^\mathrm{'+bc_str+'}_{slm\omega}(r; '+sub_str+')$, $r \in '+domain_str+' $}'
     
@@ -480,7 +480,10 @@ class TeukolskySolver:
         self.m = m
         self.frequency = omega
         if eigenvalue is None:
-            self.eigenvalue = eigenvalue(self.s, self.l, self.m, self.a*self.frequency)
+            # num_terms passed explicitly: the installed spheroidal package's
+            # automatic num_terms selection indexes out of bounds whenever
+            # l - max(|s|,|m|) >= 10 (see spheroidal.eigenvalue_spectral).
+            self.eigenvalue = spheroidal_eigenvalue(self.s, self.l, self.m, self.a*self.frequency, num_terms=self.l + 20)
         else:
             self.eigenvalue = eigenvalue
         
