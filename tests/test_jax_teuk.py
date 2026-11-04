@@ -194,3 +194,44 @@ def test_evaluation_matrix_cached(orbit, subs):
     sig = _eval_sigma_sets(orbit, subs[1])["orbit"]
     assert (evaluation_matrix(subs[1], sig, NNODE)
             is evaluation_matrix(np.array(subs[1]), sig.copy(), NNODE))
+
+
+@pytest.mark.parametrize("s", [-2, 2])
+def test_parallel_march_matches_reference(orbit, subs, s):
+    # Strict where the discrete problem is well conditioned: the stable
+    # branch (In at s=-2, Up at s=+2) of resolved modes. Unstable branches sit
+    # at a ~1e-9 rounding floor (the reference disagrees with itself there
+    # when only the batch size changes), and (30, 25, 0) is under-resolved in
+    # one wide, 1e6-growth subdomain (n=32 off by 1e-5 vs n=64 for BOTH
+    # methods); those get a loose gross-error bound. dev/JAX_PERF.md, Task 6.
+    import jax.numpy as jnp
+    from hblteuk.jax.collocation import (
+        _solve_fixed_multidomain_batch_reference, solve_fixed_multidomain_batch)
+    from hblteuk.jax.teukolsky import (boundary_conditions_in,
+                                       boundary_conditions_up)
+    modes = MODES + [(30, 25, 0), (40, -40, 2)]
+    om = jnp.array([orbit.mode_frequency(m, 0, n) for _, m, n in modes])
+    lam = jnp.array([swsh_eigenvalue(s, l, m, A * w)
+                     for (l, m, _), w in zip(modes, np.asarray(om))])
+    ma = jnp.array([m * A for _, m, _ in modes], dtype=jnp.float64)
+
+    def pqu(z):
+        return teuk_pqu(z, KAPPA, s, lam, ma, om)
+
+    stable = "in" if s == -2 else "up"
+    for fam, bc, sub in [("up", boundary_conditions_up, subs[0]),
+                         ("in", boundary_conditions_in, subs[1])]:
+        y0 = bc(KAPPA, s, lam, ma, om)
+        c_new, e_new = solve_fixed_multidomain_batch(pqu, y0, sub, n=NNODE)
+        c_ref, e_ref = _solve_fixed_multidomain_batch_reference(
+            pqu, y0, sub, n=NNODE)
+        c_new, c_ref = np.asarray(c_new), np.asarray(c_ref)
+        for b, mode in enumerate(modes):
+            tol = 1e-11 if fam == stable and mode != (30, 25, 0) else 1e-6
+            err = (np.max(np.abs(c_new[b] - c_ref[b]))
+                   / np.max(np.abs(c_ref[b])))
+            assert err < tol, f"s={s} {fam} {mode}: {err:.2e}"
+        # residual estimates agree above the rounding floor (to 0.3% in the
+        # under-resolved domain)
+        np.testing.assert_allclose(np.asarray(e_new), np.asarray(e_ref),
+                                   rtol=1e-2, atol=1e-11)

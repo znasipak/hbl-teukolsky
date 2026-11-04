@@ -72,10 +72,15 @@ def _stage(name, fn, *args, **kwargs):
 # omitting it (as this model did when stabilize became the default) understates
 # the working set by ~6x. Counts M, its LU copy, and one build temporary.
 _K_TS = 3
+# The parallel subdomain solve (collocation.py) holds every domain's system at
+# once, (B, ndomains, nnodes, nnodes), stabilized or not: M, LU copy, build
+# temporary.
+_K_PAR = 3
 
 
 def _per_mode_bytes(nsamples, ndomains, nnodes, stabilize=False):
-    b = (_K_SRC * nsamples + _K_RAD * ndomains * nnodes) * 16
+    b = (_K_SRC * nsamples + _K_RAD * ndomains * nnodes
+         + _K_PAR * ndomains * nnodes * nnodes) * 16
     if stabilize:
         b += _K_TS * ndomains * nnodes * nnodes * 16
     return b

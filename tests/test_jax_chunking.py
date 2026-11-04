@@ -91,8 +91,39 @@ def test_chunk_model_accounts_for_stabilization():
     # nnodes, nnodes), so enabling stabilization by default understated the
     # working set several-fold and chunking stopped bounding memory (measured
     # 23 GB peak against a 2 GB budget before this term was added).
+    # (Since the parallel radial solve, both paths carry an n^2 term; the
+    # TS system is the extra one.)
     plain = _per_mode_bytes(2**8, 150, 32, False)
     stab = _per_mode_bytes(2**8, 150, 32, True)
-    assert stab > 5 * plain
+    assert stab - plain == 3 * 150 * 32**2 * 16
     assert _chunk_size(8.0, 2**8, 150, 32, True) < \
-        _chunk_size(8.0, 2**8, 150, 32, False) / 5
+        _chunk_size(8.0, 2**8, 150, 32, False) / 1.8
+
+
+def test_per_mode_bytes_counts_parallel_solve():
+    # all-subdomain parallel solve holds (ndomains, nnodes, nnodes) per mode
+    assert (_per_mode_bytes(1024, 150, 32) - (58 * 1024 + 8 * 150 * 32) * 16
+            == 3 * 150 * 32**2 * 16)
+
+
+def test_generic_chunked_matches_unchunked():
+    # Review Focus 1: padded last chunk through the generic path
+    import pathlib
+    from hblteuk.geo import MiniGeo
+    from hblteuk.jax import solve_generic_mode_table
+    ref = np.load(pathlib.Path(__file__).parent / "golden"
+                  / "pybhpt_reference_v2.npz")
+    orb = MiniGeo(*ref["gen_params"])
+    modes = [(l, m, k, n) for l in (2, 3) for m in (-l, 1, l)
+             for k in (-1, 0, 1) for n in (-1, 1)]      # B = 36
+    l, m, k, n = (np.array(c) for c in zip(*modes))
+    kw = dict(nsamples=2**6, ntheta=2**5, ndomains=40, return_radial=False)
+    full = solve_generic_mode_table(orb, -2, l, m, k, n, max_memory_gb=None,
+                                    **kw)
+    # 10 modes/chunk -> 4 chunks, last padded with 4 real modes
+    chunked = solve_generic_mode_table(
+        orb, -2, l, m, k, n,
+        max_memory_gb=budget_for_chunk(10, nsamples=2**6, stabilize=True),
+        **kw)
+    np.testing.assert_allclose(np.asarray(chunked.amplitudes),
+                               np.asarray(full.amplitudes), rtol=1e-8)
