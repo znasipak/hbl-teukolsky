@@ -12,6 +12,7 @@ from hblteuk.geo import MiniGeo
 from hblteuk.jax import (flux_modes, solve_generic_mode_table,
                          solve_homogeneous_batch, solve_mode_table,
                          solve_spherical_mode_table, spheroidal_eigs_batched)
+from hblteuk.jax.pipeline import profile_stages
 from hblteuk.jax.source import (generic_samples,
                                 integrate_source_generic_batch,
                                 polar_swsh_values)
@@ -201,3 +202,15 @@ def test_static_mode_rejected(gen_orbit):
     with pytest.raises(ValueError, match="static"):
         solve_generic_mode_table(gen_orbit, -2, np.array([2]),
                                  np.array([0]), np.array([0]), np.array([0]))
+
+
+def test_generic_profile_stages(ref, gen_orbit):
+    t = ref["gen_table"][:4]
+    args = (gen_orbit, -2) + tuple(t[:, COLS[c]].astype(int)
+                                   for c in ("l", "m", "k", "n"))
+    kw = dict(nsamples=2**6, ntheta=2**5, return_radial=False)
+    solve_generic_mode_table(*args, **kw)          # compile outside the timer
+    with profile_stages() as times:
+        solve_generic_mode_table(*args, **kw)
+    assert set(times) == {"swsh", "radial", "angular", "source"}
+    assert all(v > 0 for v in times.values())

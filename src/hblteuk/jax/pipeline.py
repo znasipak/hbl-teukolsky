@@ -476,19 +476,18 @@ def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
     samples = generic_samples(orbit, nsamples=nsamples, ntheta=ntheta)
 
     def solve_chunk(idx):
-        lam, coupling, lmin = spheroidal_eigs_batched(s, l[idx], m[idx],
-                                                      g[idx], nmax=nmax)
+        lam, coupling, lmin = _stage("swsh", spheroidal_eigs_batched,
+                                     s, l[idx], m[idx], g[idx], nmax=nmax)
         lam = np.asarray(lam)
-        hom = solve_homogeneous_batch(s, kappa, lam, m[idx] * a, omega[idx],
-                                      subs_up, subs_in, n=nnodes,
-                                      stabilize=stabilize)
-        S, dS, d2S = polar_swsh_values(s, m[idx], lmin,
-                                       np.asarray(coupling), lam, g[idx],
-                                       samples.thp)
-        src = integrate_source_generic_batch(samples, lam, m[idx], k[idx],
-                                             n[idx], omega[idx], S, dS, d2S,
-                                             hom, subs_up, subs_in,
-                                             method=method)
+        hom = _stage("radial", solve_homogeneous_batch,
+                     s, kappa, lam, m[idx] * a, omega[idx],
+                     subs_up, subs_in, n=nnodes, stabilize=stabilize)
+        S, dS, d2S = _stage("angular", polar_swsh_values,
+                            s, m[idx], lmin, np.asarray(coupling), lam,
+                            g[idx], samples.thp)
+        src = _stage("source", integrate_source_generic_batch,
+                     samples, lam, m[idx], k[idx], n[idx], omega[idx],
+                     S, dS, d2S, hom, subs_up, subs_in, method=method)
         return lam, np.asarray(coupling), lmin, hom, src
 
     B = len(l)
