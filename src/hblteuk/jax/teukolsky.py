@@ -53,17 +53,21 @@ class HomogeneousBatch(NamedTuple):
     errors_in: jax.Array   # (B, D_in)
 
 
-@functools.partial(jax.jit, static_argnums=(0, 1, 6))
-def _solve_core(s, kappa, lam, ma, omega, subs, n):
-    subs_up, subs_in = subs
-
+@functools.partial(jax.jit, static_argnums=(0, 1, 6, 7))
+def _solve_branch(s, kappa, lam, ma, omega, subs, n, branch):
+    # one family's march: "up" from sigma = 0, "in" from sigma = 1
     def pqu(z):
         return teuk_pqu(z, kappa, s, lam, ma, omega)
 
-    cu, eu = solve_fixed_multidomain_batch(
-        pqu, boundary_conditions_up(kappa, s, lam, ma, omega), subs_up, n=n)
-    ci, ei = solve_fixed_multidomain_batch(
-        pqu, boundary_conditions_in(kappa, s, lam, ma, omega), subs_in, n=n)
+    bc = boundary_conditions_up if branch == "up" else boundary_conditions_in
+    return solve_fixed_multidomain_batch(pqu, bc(kappa, s, lam, ma, omega),
+                                         subs, n=n)
+
+
+def _solve_core(s, kappa, lam, ma, omega, subs, n):
+    subs_up, subs_in = subs
+    cu, eu = _solve_branch(s, kappa, lam, ma, omega, subs_up, n, "up")
+    ci, ei = _solve_branch(s, kappa, lam, ma, omega, subs_in, n, "in")
     return HomogeneousBatch(cu, ci, eu, ei)
 
 
@@ -113,15 +117,16 @@ def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
     # eigenvalue is exact algebra -- no second spheroidal eigensolve.
     s_flip = flipped_spin(int(s))
     lam_flip = lam + (s*(s + 1) - s_flip*(s_flip + 1))
-    flip = _solve_core(int(s_flip), float(kappa), lam_flip, ma, omega, subs,
-                       int(n))
-    plain = _solve_core(int(s), float(kappa), lam, ma, omega, subs, int(n))
+    # one march per family: the unstable branch at s_flip, the stable at s
+    stable = "in" if branch == "up" else "up"
+    sub = {"up": subs[0], "in": subs[1]}
+    cf, ef = _solve_branch(int(s_flip), float(kappa), lam_flip, ma, omega,
+                           sub[branch], int(n), branch)
+    cs, es = _solve_branch(int(s), float(kappa), lam, ma, omega,
+                           sub[stable], int(n), stable)
+    subs_np = subs_up if branch == "up" else subs_in
+    ct = ts_solve_batch(cf, subs_np, float(kappa), int(s), lam, ma, omega,
+                        n=int(n))
     if branch == "up":
-        cu = ts_solve_batch(flip.coeffs_up, subs_up, float(kappa), int(s),
-                            lam, ma, omega, n=int(n))
-        return HomogeneousBatch(cu, plain.coeffs_in, flip.errors_up,
-                                plain.errors_in)
-    ci = ts_solve_batch(flip.coeffs_in, subs_in, float(kappa), int(s),
-                        lam, ma, omega, n=int(n))
-    return HomogeneousBatch(plain.coeffs_up, ci, plain.errors_up,
-                            flip.errors_in)
+        return HomogeneousBatch(ct, cs, ef, es)
+    return HomogeneousBatch(cs, ct, es, ef)

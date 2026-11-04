@@ -202,3 +202,63 @@ def test_total_fluxes_stabilize_threads_through(orbit_kind):
         np.testing.assert_allclose(getattr(on, ch), getattr(off, ch),
                                    rtol=1e-5, atol=1e-30)
     assert len(on.table["l"]) == len(off.table["l"])
+
+
+def _mode_params(orbit, s):
+    om = np.array([orbit.mode_frequency(m, 0, n) for _, m, n in MODES])
+    lam = np.array([swsh_eigenvalue(s, l, m, A * w)
+                    for (l, m, _), w in zip(MODES, om)])
+    ma = np.array([m * A for _, m, _ in MODES])
+    return lam, ma, om
+
+
+def test_stabilized_marches_each_branch_once(geom, monkeypatch):
+    # one march per family: the unstable branch at the flipped spin, the
+    # stable branch at s -- not both branches twice
+    from hblteuk.jax import teukolsky
+    orbit, su, si, _, _ = geom
+    lam, ma, om = _mode_params(orbit, -2)
+    calls = []
+    real = teukolsky.solve_fixed_multidomain_batch
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(teukolsky, "solve_fixed_multidomain_batch", counting)
+    with jax.disable_jit():
+        solve_homogeneous_batch(-2, KAPPA, lam[:1], ma[:1], om[:1], su, si,
+                                n=NNODE, stabilize=True)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("s", [-2, 2])
+def test_stabilized_equals_core_reference(geom, s):
+    # the pre-optimization route: both branches at both spins, keep one each
+    from hblteuk.jax.teukolsky import _solve_core
+    orbit, su, si, _, _ = geom
+    lam, ma, om = _mode_params(orbit, s)
+    s_flip = flipped_spin(s)
+    lam_flip = lam + (s * (s + 1) - s_flip * (s_flip + 1))
+    jnp = jax.numpy
+    subs = (jnp.asarray(su), jnp.asarray(si))
+    args = (float(KAPPA),)
+    flip = _solve_core(s_flip, *args, jnp.asarray(lam_flip, dtype=complex),
+                       jnp.asarray(ma), jnp.asarray(om, dtype=complex),
+                       subs, NNODE)
+    plain = _solve_core(s, *args, jnp.asarray(lam, dtype=complex),
+                        jnp.asarray(ma), jnp.asarray(om, dtype=complex),
+                        subs, NNODE)
+    new = solve_homogeneous_batch(s, KAPPA, lam, ma, om, su, si, n=NNODE,
+                                  stabilize=True)
+    if unstable_branch(s) == "up":
+        ref = (ts_solve_batch(flip.coeffs_up, su, KAPPA, s, lam, ma, om,
+                              n=NNODE), plain.coeffs_in,
+               flip.errors_up, plain.errors_in)
+    else:
+        ref = (plain.coeffs_up, ts_solve_batch(flip.coeffs_in, si, KAPPA, s,
+                                               lam, ma, om, n=NNODE),
+               plain.errors_up, flip.errors_in)
+    for got, want in zip(new, ref):
+        np.testing.assert_allclose(np.asarray(got), np.asarray(want),
+                                   rtol=1e-13, atol=0)
