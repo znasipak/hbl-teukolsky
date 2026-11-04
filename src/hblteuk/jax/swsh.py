@@ -7,7 +7,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..swsh import sphericalY_expansion
+from scipy.special import gammaln
+
+from ..swsh import Asljm, dAsljm, sphericalY_expansion
 
 
 def _safe_div(num, den):
@@ -141,4 +143,81 @@ def sphericalY_basis_matrix(s, m, lmin, nterms, z):
     out = np.empty((nterms, len(z)))
     for j in range(nterms):
         out[j] = sphericalY_expansion(s, lmin + j, m, z)
+    return out
+
+
+# ---- scalar Ylm ladder (device) + spin-coupling tables (host) ---------------
+# sYlm = sin^-|s| sum_j Asljm Y_jm  (dS: -sin^-(|s|+1) sum_j dAsljm Y_jm), so
+# every harmonic and derivative is one contraction against the scalar Y_{L,|m|}
+# ladder. Fixed-m recurrence, ascending L; no factorial overflow (CPU lpmv
+# path dies near m ~ 150). dev/JAX_PERF.md, Task 2.
+
+@jax.jit
+def _ylm_core(mf, log_seed, sign, coeffs, th):
+    z = jnp.cos(th)[None, :]
+    x = jnp.sin(th)[None, :]
+    mc = mf[:, None]
+    y0 = sign[:, None] * jnp.exp(log_seed[:, None] + mc * jnp.log(x))
+    y1 = z * jnp.sqrt(2 * mc + 3) * y0
+    acc = coeffs[:, 0, None] * y0 + coeffs[:, 1, None] * y1
+
+    def step(carry, xs):
+        ym2, ym1, acc = carry
+        t, c = xs
+        L = mc + t
+        a = jnp.sqrt((4 * L**2 - 1) / (L**2 - mc**2))
+        b = jnp.sqrt(((L - 1)**2 - mc**2) / (4 * (L - 1)**2 - 1))
+        y = a * (z * ym1 - b * ym2)
+        return (ym1, y, acc + c[:, None] * y), None
+
+    T = coeffs.shape[1]
+    ts = jnp.arange(2, T, dtype=mf.dtype)
+    (_, _, acc), _ = jax.lax.scan(step, (y0, y1, acc), (ts, coeffs.T[2:]))
+    return acc
+
+
+def ylm_contract(m, coeffs, th):
+    """sum_t coeffs[b, t] * Ylm(|m_b| + t, |m_b|, cos th) -> (B, nth).
+
+    m (B,) ints (host), coeffs (B, T) with T >= 2, th (nth,) in (0, pi).
+    CPU Ylm normalization at |m| (Condon-Shortley phase); the m < 0 sign is
+    carried by the coupling tables, not here.
+    """
+    ma = np.abs(np.asarray(m, dtype=np.int64))
+    log_seed = (0.5 * gammaln(2 * ma + 1) - ma * np.log(2.0) - gammaln(ma + 1)
+                + 0.5 * np.log((2 * ma + 1) / (4 * np.pi)))
+    sign = np.where(ma % 2 == 0, 1.0, -1.0)
+    coeffs = jnp.asarray(coeffs)
+    if coeffs.shape[1] < 2:
+        coeffs = jnp.pad(coeffs, ((0, 0), (0, 2 - coeffs.shape[1])))
+    return _ylm_core(jnp.asarray(ma, dtype=jnp.float64), jnp.asarray(log_seed),
+                     jnp.asarray(sign), coeffs, jnp.asarray(th, jnp.float64))
+
+
+@functools.lru_cache(maxsize=4096)
+def _coupling_table(s, m, lmin, nterms, deriv):
+    # [j, t] = (d)Asljm(s, lmin+j, |m|+t, m); Ylm(L, m) = (-1)^|m| Ylm(L, |m|)
+    T = nterms + 2 * abs(s) + 2
+    A = dAsljm if deriv else Asljm
+    sgn = (-1.0)**abs(m) if m < 0 else 1.0
+    tab = np.array([[A(s, lmin + j, abs(m) + t, m) for t in range(T)]
+                    for j in range(nterms)], dtype=np.float64)
+    tab *= sgn
+    tab.flags.writeable = False
+    return tab
+
+
+def ylm_coupling_coeffs(s, m, lmin, coeffs, deriv):
+    """Host: spheroidal coefficients (B, nterms) -> Ylm-ladder coefficients
+    (B, nterms + 2|s| + 2) for S (deriv 0) or the dS numerator (deriv 1)."""
+    m = np.asarray(m, dtype=np.int64)
+    lmin = np.asarray(lmin, dtype=np.int64)
+    coeffs = np.asarray(coeffs)
+    nterms = coeffs.shape[1]
+    out = np.zeros((len(m), nterms + 2 * abs(s) + 2),
+                   dtype=np.result_type(coeffs.dtype, np.float64))
+    for mm, ll in set(zip(m.tolist(), lmin.tolist())):
+        sel = (m == mm) & (lmin == ll)
+        out[sel] = coeffs[sel] @ _coupling_table(int(s), mm, ll, nterms,
+                                                 int(deriv))
     return out

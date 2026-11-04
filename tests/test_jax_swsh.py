@@ -93,3 +93,48 @@ def test_nmax_override_and_validation():
     assert lam1[0] == pytest.approx(float(lam2[0]), rel=1e-12)
     with pytest.raises(ValueError):
         spheroidal_eigs_batched(-2, [30], [2], [0.27], nmax=10)
+
+
+# ---- Task 2: scalar Ylm ladder + host spin-coupling tables -----------------
+
+_TH = np.linspace(0.05, np.pi - 0.05, 64)
+
+
+@pytest.mark.parametrize("m", [0, 1, 2, 7, 30, 60])
+def test_ylm_contract_matches_cpu_ylm(m):
+    from hblteuk.jax.swsh import ylm_contract
+    from hblteuk.swsh import Ylm
+    T = 12
+    for t in (0, 1, 2, 5, T - 1):
+        c = np.zeros((1, T))
+        c[0, t] = 1.0
+        got = np.asarray(ylm_contract(np.array([m]), c, _TH))[0]
+        ref = Ylm(m + t, m, np.cos(_TH))
+        assert np.max(np.abs(got - ref)) / np.max(np.abs(ref)) < 1e-12, (m, t)
+
+
+def test_ylm_contract_large_m_finite():
+    from hblteuk.jax.swsh import ylm_contract
+    c = np.eye(11)
+    got = np.asarray(ylm_contract(np.full(11, 200), c, _TH))
+    assert np.all(np.isfinite(got)) and np.max(np.abs(got)) > 0
+
+
+@pytest.mark.parametrize("l, m", [(2, 2), (2, 0), (3, -1), (4, -3), (10, 7),
+                                  (20, -20)])
+def test_coupling_reconstructs_sylm(l, m):
+    from hblteuk.jax.swsh import ylm_contract, ylm_coupling_coeffs
+    from hblteuk.swsh import sphericalY_expansion, sphericalY_expansion_deriv
+    s, nterms = -2, 8
+    lmin = max(abs(s), abs(m))
+    c = np.zeros((1, nterms))
+    c[0, l - lmin] = 1.0
+    z, sn = np.cos(_TH), np.sin(_TH)
+    for deriv, pref, ref in [
+            (0, sn**-2, sphericalY_expansion(s, l, m, z)),
+            (1, -sn**-3, sphericalY_expansion_deriv(s, l, m, z))]:
+        tab = ylm_coupling_coeffs(s, np.array([m]), np.array([lmin]), c, deriv)
+        assert tab.shape == (1, nterms + 2 * abs(s) + 2)
+        got = pref * np.asarray(ylm_contract(np.array([m]), tab, _TH))[0]
+        err = np.max(np.abs(got - ref)) / np.max(np.abs(ref))
+        assert err < 1e-12, (l, m, deriv, err)
