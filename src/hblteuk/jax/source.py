@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..swsh import sphericalY_expansion, sphericalY_expansion_deriv
-from .chebyshev import evaluate_multidomain
+from .chebyshev import evaluate_with_matrix, evaluation_matrix
 
 SQRT2 = float(np.sqrt(2.0))
 
@@ -336,6 +336,18 @@ def _integrate_core(s, kappa, a, En, Lz, gamma_mino, orbit_arrs,
     return SourceAmplitudes(amps.T, err.T)
 
 
+
+def _psi_at(hom, subdomains_up, subdomains_in, sig):
+    # [psi_up, dpsi_up, d2psi_up, psi_in, dpsi_in, d2psi_in], each (B, Np)
+    n = hom.coeffs_up.shape[-1]
+    sig = np.asarray(sig, dtype=np.float64)
+    out = []
+    for coeffs, subs in [(hom.coeffs_up, subdomains_up),
+                         (hom.coeffs_in, subdomains_in)]:
+        out.extend(evaluate_with_matrix(coeffs,
+                                        evaluation_matrix(subs, sig, n)))
+    return out
+
 def integrate_source_batch(samples, lam, m, n, omega, S_eq, dS_eq, d2S_eq,
                            hom, subdomains_up, subdomains_in,
                            method="fft"):
@@ -355,11 +367,7 @@ def integrate_source_batch(samples, lam, m, n, omega, S_eq, dS_eq, d2S_eq,
     s = -2
     sig = 2 * samples.kappa / (samples.rp - (1 - samples.kappa))
 
-    psi = []
-    for coeffs, subs in [(hom.coeffs_up, subdomains_up),
-                         (hom.coeffs_in, subdomains_in)]:
-        for d in (0, 1, 2):
-            psi.append(evaluate_multidomain(coeffs, subs, sig, deriv=d))
+    psi = _psi_at(hom, subdomains_up, subdomains_in, sig)
 
     En, Lz, _ = samples.constants
     orbit_arrs = tuple(jnp.asarray(x) for x in
@@ -518,11 +526,7 @@ def integrate_source_spherical_batch(samples, lam, m, k, omega, S, dS, d2S,
     s = -2
     sig = np.array([2 * samples.kappa / (samples.rp - (1 - samples.kappa))])
 
-    psi = []
-    for coeffs, subs in [(hom.coeffs_up, subdomains_up),
-                         (hom.coeffs_in, subdomains_in)]:
-        for d in (0, 1, 2):
-            psi.append(evaluate_multidomain(coeffs, subs, sig, deriv=d)[:, 0])
+    psi = [p[:, 0] for p in _psi_at(hom, subdomains_up, subdomains_in, sig)]
 
     En, Lz, _ = samples.constants
     polar_arrs = tuple(jnp.asarray(x) for x in
@@ -732,11 +736,7 @@ def integrate_source_generic_batch(samples, lam, m, k, n, omega, S, dS, d2S,
     s = -2
     sig = 2 * samples.kappa / (samples.rp - (1 - samples.kappa))
 
-    psi = []
-    for coeffs, subs in [(hom.coeffs_up, subdomains_up),
-                         (hom.coeffs_in, subdomains_in)]:
-        for d in (0, 1, 2):
-            psi.append(evaluate_multidomain(coeffs, subs, sig, deriv=d))
+    psi = _psi_at(hom, subdomains_up, subdomains_in, sig)
 
     En, Lz, _ = samples.constants
     radial_arrs = tuple(jnp.asarray(x) for x in

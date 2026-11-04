@@ -156,3 +156,41 @@ def test_static_mode_rejected(subs):
     with pytest.raises(ValueError, match="static"):
         solve_homogeneous_batch(-2, KAPPA, [4.0], [0.0], [0.0],
                                 subs[0], subs[1])
+
+
+def _eval_sigma_sets(orbit, sub):
+    # orbit samples, sigma exactly on three interior boundaries, one domain
+    smin = sigma_r(orbit.radial_roots[0], KAPPA)
+    smax = sigma_r(orbit.radial_roots[1], KAPPA)
+    asc = np.sort(sub)
+    mid = len(asc) // 2
+    return {"orbit": np.linspace(smin, smax, 37),
+            "boundaries": np.array([asc[1], asc[mid], asc[-2],
+                                    0.5 * (asc[mid] + asc[mid + 1])]),
+            "one_domain": np.linspace(asc[mid] + 1e-3 * (asc[mid + 1] - asc[mid]),
+                                      asc[mid + 1] - 1e-3 * (asc[mid + 1] - asc[mid]),
+                                      9)}
+
+
+def test_evaluation_matrix_matches_multidomain(orbit, subs, batch):
+    from hblteuk.jax.chebyshev import evaluate_with_matrix, evaluation_matrix
+    res = batch[0]
+    for coeffs, sub in [(res.coeffs_up, subs[0]), (res.coeffs_in, subs[1])]:
+        for tag, sig in _eval_sigma_sets(orbit, sub).items():
+            em = evaluation_matrix(sub, sig, NNODE)
+            got = np.asarray(evaluate_with_matrix(coeffs, em))
+            assert got.shape == (3, len(MODES), len(sig))
+            for d in (0, 1, 2):
+                ref = np.asarray(evaluate_multidomain(coeffs, sub, sig,
+                                                      deriv=d))
+                err = np.max(np.abs(got[d] - ref)) / np.max(np.abs(ref))
+                assert err < 1e-13, f"{tag} d{d}: {err:.2e}"
+            if tag == "one_domain":
+                assert em.hi - em.lo == 1
+
+
+def test_evaluation_matrix_cached(orbit, subs):
+    from hblteuk.jax.chebyshev import evaluation_matrix
+    sig = _eval_sigma_sets(orbit, subs[1])["orbit"]
+    assert (evaluation_matrix(subs[1], sig, NNODE)
+            is evaluation_matrix(np.array(subs[1]), sig.copy(), NNODE))
