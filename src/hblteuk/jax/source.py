@@ -80,7 +80,26 @@ def polar_samples(orbit, nsamples=2**8):
 
 
 def polar_swsh_values(s, m_arr, lmin_arr, coeffs, eigenvalues, gamma_arr, th):
-    """S, dS/dtheta, d2S/dtheta2 on a shared theta grid -> (B, nth) each."""
+    """S, dS/dtheta, d2S/dtheta2 on a shared theta grid -> (B, nth) each.
+
+    Device Y_{L,|m|} ladder contracted with cached host spin-coupling tables
+    (jax/swsh.py); d2S from the angular ODE. dev/JAX_PERF.md, Task 3.
+    """
+    from .summation import _swsh_deriv2
+    from .swsh import ylm_contract, ylm_coupling_coeffs
+    th = np.atleast_1d(np.asarray(th, dtype=np.float64))
+    sth = jnp.sin(jnp.asarray(th))[None, :]
+    S = sth**-abs(s) * ylm_contract(
+        m_arr, ylm_coupling_coeffs(s, m_arr, lmin_arr, coeffs, 0), th)
+    dS = -sth**-(abs(s) + 1) * ylm_contract(
+        m_arr, ylm_coupling_coeffs(s, m_arr, lmin_arr, coeffs, 1), th)
+    d2S = _swsh_deriv2(s, m_arr, gamma_arr, eigenvalues, th, S, dS)
+    return S, dS, d2S
+
+
+def _polar_swsh_values_reference(s, m_arr, lmin_arr, coeffs, eigenvalues,
+                                 gamma_arr, th):
+    # host Y-basis path (pre-Task 3); equivalence-test reference
     from .summation import swsh_theta_values
     S = swsh_theta_values(s, m_arr, lmin_arr, coeffs, th)
     dS = swsh_theta_values(s, m_arr, lmin_arr, coeffs, th, deriv=1)

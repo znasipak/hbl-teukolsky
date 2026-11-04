@@ -7,6 +7,18 @@ from ..swsh import sphericalY_expansion
 from .chebyshev import evaluate_multidomain
 
 
+def _swsh_deriv2(s, m_arr, gamma, eigenvalues, th, S, dS):
+    # d2S/dtheta2 from the angular ODE (swsh.deriv2); all (B,) / (nth,)
+    thb = jnp.asarray(np.atleast_1d(th))[None, :]
+    m = jnp.asarray(np.asarray(m_arr, dtype=np.float64))[:, None]
+    g = jnp.asarray(np.asarray(gamma, dtype=np.float64))[:, None]
+    lam = jnp.asarray(np.asarray(eigenvalues, dtype=np.float64))[:, None]
+    sth, cth = jnp.sin(thb), jnp.cos(thb)
+    gth = (-g**2 * sth**2 - (m + s * cth)**2 / sth**2 - 2 * s * g * cth
+           + s + 2 * m * g + lam)
+    return -(cth / sth) * dS - gth * S
+
+
 def swsh_theta_values(s, m_arr, lmin_arr, coeffs, th, deriv=0,
                       eigenvalues=None, gamma=None):
     """Batched S_{lmn}(theta) on a shared theta grid -> (B, ntheta).
@@ -22,14 +34,7 @@ def swsh_theta_values(s, m_arr, lmin_arr, coeffs, th, deriv=0,
             raise ValueError("deriv=2 requires eigenvalues and gamma")
         S = swsh_theta_values(s, m_arr, lmin_arr, coeffs, th)
         dS = swsh_theta_values(s, m_arr, lmin_arr, coeffs, th, deriv=1)
-        thb = jnp.asarray(np.atleast_1d(th))[None, :]
-        m = jnp.asarray(np.asarray(m_arr, dtype=np.float64))[:, None]
-        g = jnp.asarray(np.asarray(gamma, dtype=np.float64))[:, None]
-        lam = jnp.asarray(np.asarray(eigenvalues, dtype=np.float64))[:, None]
-        sth, cth = jnp.sin(thb), jnp.cos(thb)
-        gth = (-g**2 * sth**2 - (m + s * cth)**2 / sth**2 - 2 * s * g * cth
-               + s + 2 * m * g + lam)
-        return -(cth / sth) * dS - gth * S
+        return _swsh_deriv2(s, m_arr, gamma, eigenvalues, th, S, dS)
     coeffs = np.asarray(coeffs)
     B, nterms = coeffs.shape
     z = np.cos(np.atleast_1d(th))

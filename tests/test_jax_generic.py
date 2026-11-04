@@ -214,3 +214,39 @@ def test_generic_profile_stages(ref, gen_orbit):
         solve_generic_mode_table(*args, **kw)
     assert set(times) == {"swsh", "radial", "angular", "source"}
     assert all(v > 0 for v in times.values())
+
+
+def _polar_theta_grids():
+    gens = [MiniGeo(0.9, 12.0, 0.3, x) for x in (0.6, -0.6, 0.15)]
+    grids = [generic_samples(o, nsamples=2**4, ntheta=2**6).thp for o in gens]
+    from hblteuk.jax.source import polar_samples
+    grids.append(polar_samples(MiniGeo(0.9, 10.0, 0.0, 0.5), 2**6).thp)
+    return grids
+
+
+def test_polar_swsh_device_matches_reference(monkeypatch):
+    # Task 3: on-device ladder vs host Y-basis, incl. near-polar theta
+    # (Review Focus 3) and m = 0, +-1 (|m| < |s|)
+    from hblteuk.jax import source, summation
+    s = -2
+    modes = [(l, m) for l in range(2, 21) for m in range(-l, l + 1)
+             if l <= 4 or m in (-l, -7, -1, 0, 1, 2, 7, l)]
+    l = np.array([c[0] for c in modes])
+    m = np.array([c[1] for c in modes])
+    g = 0.9 * np.linspace(-0.6, 0.8, len(modes))      # a*omega, mixed sign
+    lam, coup, lmin = spheroidal_eigs_batched(s, l, m, g)
+    args = (s, m, np.asarray(lmin), np.asarray(coup), np.asarray(lam), g)
+    for th in _polar_theta_grids():
+        ref = source._polar_swsh_values_reference(*args, th)
+        with monkeypatch.context() as mp:
+            def _boom(*a, **k):
+                raise AssertionError("host Y-basis path called")
+            mp.setattr(summation, "swsh_theta_values", _boom)
+            got = source.polar_swsh_values(*args, th)
+        for name, x, y in zip(("S", "dS", "d2S"), got, ref):
+            x, y = np.asarray(x), np.asarray(y)
+            err = (np.max(np.abs(x - y), axis=1)
+                   / np.max(np.abs(y), axis=1))
+            b = int(np.argmax(err))
+            assert err[b] < 1e-10, (name, modes[b], err[b],
+                                    th.min(), th.max())
