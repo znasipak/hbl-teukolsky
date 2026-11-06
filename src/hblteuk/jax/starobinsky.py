@@ -17,6 +17,9 @@
 # The f_TS/g_TS expressions are reused directly from the CPU module: they are
 # pure arithmetic in (sigma, kappa, lam, ma, omega), so they evaluate on JAX
 # arrays unchanged (verified to 1e-13 against the numpy path).
+import functools
+
+import jax
 import jax.numpy as jnp
 
 from ..teuk import (hbl_teukolsky_starobinsky_system_minus_to_plus_2,
@@ -39,20 +42,11 @@ def flipped_spin(s):
     return _SPEC[s][1] if s in _SPEC else None
 
 
-def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
-                   n=32, chtype=1, renormalize=True):
-    """Map a batched opposite-spin solution to s_target via Teukolsky-Starobinsky.
-
-    coeffs_src: (B, D, n) Chebyshev coefficients of the *stable* solve, on the
-    branch that s_target marches badly. subdomains: (D+1,). lam: (B,) the
-    ordinary eigenvalue of s_target (lambda_CH follows by spin invariance).
-    Returns (B, D, n) coefficients of the s_target solution.
-
-    Every subdomain is independent here -- unlike the marching solver there is
-    no scan, so this batches flat.
-    """
-    if s_target not in _SPEC:
-        raise ValueError(f"no TS stabilization defined for s={s_target}")
+# static: kappa, s_target, n, chtype, renormalize. One compiled program per
+# chunk shape; eager dispatch cost ~22 ms per chunk on H200 (dev/JAX_PERF.md).
+@functools.partial(jax.jit, static_argnums=(2, 3, 7, 8, 9))
+def _ts_solve_core(coeffs_src, sub, kappa, s_target, lam, ma, omega, n, chtype,
+                   renormalize):
     transform_sys = _SPEC[s_target][2]
 
     mats = collocation_matrices(n, chtype)
@@ -63,11 +57,6 @@ def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
     bcL, dbcL = jnp.asarray(mats["bc_left"])       # value, d/dx rows at x=-1
     bcR, dbcR = jnp.asarray(mats["bc_right"])      # value, d/dx rows at x=+1
 
-    coeffs_src = jnp.asarray(coeffs_src)
-    sub = jnp.asarray(subdomains, dtype=jnp.float64)
-    lam = jnp.asarray(lam)
-    ma = jnp.asarray(ma)
-    omega = jnp.asarray(omega)
     lam_ch = lam + s_target*(s_target + 1)         # spin-invariant eigenvalue
 
     z0, z1 = sub[:-1], sub[1:]                     # (D,)
@@ -118,3 +107,28 @@ def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
         new_b = jnp.einsum("i,bi->b", bcL, out[:, 0])
         out = out*(src_b/new_b)[:, None, None]
     return out
+
+
+def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
+                   n=32, chtype=1, renormalize=True):
+    """Map a batched opposite-spin solution to s_target via Teukolsky-Starobinsky.
+
+    coeffs_src: (B, D, n) Chebyshev coefficients of the *stable* solve, on the
+    branch that s_target marches badly. subdomains: (D+1,). lam: (B,) the
+    ordinary eigenvalue of s_target (lambda_CH follows by spin invariance).
+    Returns (B, D, n) coefficients of the s_target solution.
+
+    Every subdomain is independent here -- unlike the marching solver there is
+    no scan, so this batches flat.
+    """
+    if s_target not in _SPEC:
+        raise ValueError(f"no TS stabilization defined for s={s_target}")
+    # fixed dtypes: a real lam would compile a second program with different
+    # roundoff
+    return _ts_solve_core(jnp.asarray(coeffs_src, dtype=jnp.complex128),
+                          jnp.asarray(subdomains, dtype=jnp.float64),
+                          float(kappa), int(s_target),
+                          jnp.asarray(lam, dtype=jnp.complex128),
+                          jnp.asarray(ma, dtype=jnp.float64),
+                          jnp.asarray(omega, dtype=jnp.complex128),
+                          int(n), int(chtype), bool(renormalize))

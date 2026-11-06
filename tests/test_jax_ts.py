@@ -262,3 +262,29 @@ def test_stabilized_equals_core_reference(geom, s):
     for got, want in zip(new, ref):
         np.testing.assert_allclose(np.asarray(got), np.asarray(want),
                                    rtol=1e-13, atol=0)
+
+
+def test_ts_solve_batch_is_jitted_and_matches_eager(geom):
+    # one compiled program: eager dispatch costs ~22 ms per chunk on H200
+    # (dev/JAX_PERF.md), and compiling must not move the result
+    from hblteuk.jax.starobinsky import _ts_solve_core
+
+    orbit, su, si, _, _ = geom
+    om = np.array([orbit.mode_frequency(m, 0, n) for _, m, n in MODES])
+    lam = np.array([swsh_eigenvalue(-2, l, m, A * w)
+                    for (l, m, _), w in zip(MODES, om)])
+    ma = np.array([m * A for _, m, _ in MODES])
+    flip = solve_homogeneous_batch(2, KAPPA, lam - 4.0, ma, om, su, si,
+                                   n=NNODE)
+
+    got = ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam, ma, om, n=NNODE)
+    size = _ts_solve_core._cache_size()
+    assert size >= 1
+    ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam, ma, om, n=NNODE)
+    assert _ts_solve_core._cache_size() == size          # reused, not recompiled
+
+    with jax.disable_jit():
+        ref = ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam, ma, om,
+                             n=NNODE)
+    got, ref = np.asarray(got), np.asarray(ref)
+    assert np.max(np.abs(got - ref)) / np.max(np.abs(ref)) < 1e-12
