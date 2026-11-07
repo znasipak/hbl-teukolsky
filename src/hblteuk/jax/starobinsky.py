@@ -25,7 +25,7 @@ import jax.numpy as jnp
 from ..teuk import (hbl_teukolsky_starobinsky_system_minus_to_plus_2,
                     hbl_teukolsky_starobinsky_system_plus_to_minus_2)
 from .chebyshev import collocation_matrices
-from .teukolsky import teuk_pqu
+from .teukolsky import _bc_ratio, teuk_pqu
 
 # which branch each spin must borrow, and from where
 _SPEC = {-2: ("up", 2, hbl_teukolsky_starobinsky_system_plus_to_minus_2),
@@ -102,10 +102,14 @@ def _ts_solve_core(coeffs_src, sub, kappa, s_target, lam, ma, omega, n, chtype,
     if renormalize:
         # the transform carries the Starobinsky constant, which does not cancel
         # out of the amplitudes (Z^Up is built from Psi_In over the Wronskian,
-        # so it scales as 1/c). Restore the source solve's boundary value.
-        src_b = jnp.einsum("i,bi->b", bcL, coeffs_src[:, 0])
-        new_b = jnp.einsum("i,bi->b", bcL, out[:, 0])
-        out = out*(src_b/new_b)[:, None, None]
+        # so it scales as 1/c). Restore the source solve's boundary value using
+        # the closed form f + g*(psi'/psi) at the boundary (Up: 16 omega^4):
+        # measured from out, it falls below roundoff at small omega and can
+        # round to exactly zero (dev/JAX_PERF.md).
+        s_src = _SPEC[s_target][1]
+        bc = _bc_ratio(sub[0], kappa, s_src, lam_ch - s_src*(s_src + 1), ma,
+                       omega)
+        out = out/(fL[:, 0] + gL[:, 0]*bc)[:, None, None]
     return out
 
 

@@ -288,3 +288,49 @@ def test_ts_solve_batch_is_jitted_and_matches_eager(geom):
                              n=NNODE)
     got, ref = np.asarray(got), np.asarray(ref)
     assert np.max(np.abs(got - ref)) / np.max(np.abs(ref)) < 1e-12
+
+
+@pytest.mark.parametrize("target,branch", [(-2, "up"), (2, "in")])
+def test_ts_renormalization_is_exact_at_low_frequency(target, branch):
+    # the boundary value of the mapped solution is below roundoff at small
+    # omega (Up: 16 omega^4). Dividing by a measured value gave noise, or NaN
+    # when it rounded to zero on H200, so the factor must be the closed form.
+    from hblteuk.jax.starobinsky import _SPEC
+    from hblteuk.jax.teukolsky import _bc_ratio
+
+    orbit = MiniGeo(0.9, 8.0, 0.3, 0.7)
+    a, kappa = orbit.a, np.sqrt(1 - orbit.a**2)
+    su = generate_subdomain_list([0, sigma_r(orbit.radial_roots[1], kappa)],
+                                 NDOM, "arcsinh7")
+    si = generate_subdomain_list([1, sigma_r(orbit.radial_roots[0], kappa)],
+                                 NDOM, "arcsinh7")
+    modes = [(13, 11, -1, -15), (14, 11, -1, -15), (2, 2, 0, 0), (4, 3, 1, 2)]
+    om = np.array([orbit.mode_frequency(m, k, n) for _, m, k, n in modes])
+    lam = np.array([swsh_eigenvalue(target, l, m, a * w)
+                    for (l, m, _, _), w in zip(modes, om)])
+    ma = np.array([m * a for _, m, _, _ in modes])
+
+    source = flipped_spin(target)
+    flip = solve_homogeneous_batch(
+        source, kappa, lam + target * (target + 1) - source * (source + 1),
+        ma, om, su, si, n=NNODE, stabilize=False)
+    coeffs, subs, sb = ((flip.coeffs_up, su, 0.0) if branch == "up"
+                        else (flip.coeffs_in, si, 1.0))
+    raw = np.asarray(ts_solve_batch(coeffs, subs, kappa, target, lam, ma, om,
+                                    n=NNODE, renormalize=False))
+    out = np.asarray(ts_solve_batch(coeffs, subs, kappa, target, lam, ma, om,
+                                    n=NNODE))
+
+    lam_c = lam + 0j
+    lam_ch = lam_c + target * (target + 1)
+    sig = np.array([[sb]])
+    f, g = _SPEC[target][2](sig, kappa, lam_ch[:, None], ma[:, None],
+                            om[:, None] + 0j)
+    bc = np.asarray(_bc_ratio(sb, kappa, source,
+                              jax.numpy.asarray(lam_ch - source * (source + 1)),
+                              jax.numpy.asarray(ma),
+                              jax.numpy.asarray(om + 0j)))
+    ratio = np.ravel(f) + np.ravel(g) * bc
+    if branch == "up":
+        np.testing.assert_allclose(ratio, 16 * om**4, rtol=1e-12)
+    np.testing.assert_allclose(out[:, 7, 3] * ratio, raw[:, 7, 3], rtol=1e-12)

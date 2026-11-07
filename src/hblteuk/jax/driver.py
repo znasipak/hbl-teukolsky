@@ -93,6 +93,13 @@ def sum_fluxes(sol, orbit, tol=None, peak_edges=False):
                     carter_frequencies=orbit.carter_frequencies())
     F = {"Edot": 2 * np.asarray(fx.Edot), "Ldot": 2 * np.asarray(fx.Ldot),
          "Qdot": 2 * np.asarray(fx.Qdot)}
+    # the stop checks mask NaN, so a bad mode would pass as a converged total
+    bad = ~np.all([np.isfinite(F[c]).all(axis=1) for c in _CHANNELS], axis=0)
+    if bad.any():
+        rows = np.nonzero(bad)[0]
+        raise FloatingPointError(
+            f"non-finite flux in {rows.size} modes, first (l, m, k, n): "
+            f"{[tuple(int(x[i]) for x in (l, m, k, n)) for i in rows[:5]]}")
     totals = {c: F[c].sum(axis=0) for c in _CHANNELS}
 
     err = np.asarray(sol.errors)          # (B, 2) [In, Up] amplitude rel err

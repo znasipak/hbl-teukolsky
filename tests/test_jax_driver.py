@@ -479,3 +479,22 @@ def test_driver_stops_at_max_modes(strategy):
         got = total_fluxes(MiniGeo(A, 12.0, 0.0, -0.5), tol=1e-12,
                            strategy=strategy, max_modes=500)
     assert not all(got.converged.values())
+
+
+def test_sum_fluxes_rejects_non_finite_modes():
+    # one NaN mode must not pass as a converged total
+    from types import SimpleNamespace
+    from hblteuk.geo import MiniGeo
+    from hblteuk.jax import solve_modes, sum_fluxes
+
+    orbit = MiniGeo(0.9, 10.0, 0.2, 0.7)
+    l, m, k, n = (np.array(c) for c in ((2, 2), (2, 1), (0, 0), (0, 1)))
+    sol = solve_modes(orbit, -2, l, m, k, n, nsamples=2**6, ntheta=2**5,
+                      ndomains=40, return_radial=False)
+    amp = np.array(sol.amplitudes)
+    amp[1] = np.nan
+    bad = SimpleNamespace(l=sol.l, m=sol.m, k=sol.k, n=sol.n, omega=sol.omega,
+                          eigenvalues=sol.eigenvalues, amplitudes=amp,
+                          errors=np.array(sol.errors))
+    with pytest.raises(FloatingPointError, match=r"\(2, 1, 0, 1\)"):
+        sum_fluxes(bad, orbit, tol=1e-6)
