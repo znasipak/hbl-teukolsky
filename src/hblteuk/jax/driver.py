@@ -9,7 +9,7 @@ from typing import NamedTuple
 import numpy as np
 
 from .fluxes import flux_modes
-from .pipeline import (GenericModeSolution, _chunk_size,
+from .pipeline import (GenericModeSolution, _bucket, _chunk_size,
                        solve_generic_mode_table, solve_mode_table,
                        solve_spherical_mode_table)
 
@@ -230,12 +230,11 @@ def _want_bucket(bucket):
 
 def _bucketed_solve(orbit, s, arr, nsamples, ntheta, max_memory_gb,
                     pad, ndomains=150, nnodes=32, stabilize=True):
-    """solve_modes with the batch padded to the pipeline chunk size so every
-    adaptive round reuses one compiled trace. Padding rows are duplicates of
-    real modes (kept valid) and are sliced off before return. csize is the
-    same bucket the chunked path already pads to (pipeline.py), so a padded
-    small round and a large chunked round share the identical XLA trace ->
-    one compile for the whole driver run instead of one per round.
+    """solve_modes with the batch padded to a bucket rung (pipeline._bucket,
+    capped at the chunk size), so adaptive rounds reuse a small set of
+    compiled traces. Padding rows are duplicates of real modes (kept valid)
+    and are sliced off before return. Padding to the whole chunk, as before,
+    reused one trace but wasted up to ~1.7x work on small rounds.
     """
     B = len(arr)
     kw = dict(nsamples=nsamples, ntheta=ntheta, ndomains=ndomains,
@@ -245,7 +244,8 @@ def _bucketed_solve(orbit, s, arr, nsamples, ntheta, max_memory_gb,
         csize = _chunk_size(max_memory_gb, nsamples, ndomains, nnodes,
                             stabilize)
         if csize is not None and B < csize:
-            arr = arr[np.arange(csize) % B]      # first B rows == arr (csize>=B)
+            size = _bucket(B, csize)
+            arr = arr[np.arange(size) % B]       # first B rows == arr
     sol = solve_modes(orbit, s, arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3],
                       **kw)
     return _SolView(sol.l[:B], sol.m[:B], sol.k[:B], sol.n[:B],
@@ -446,7 +446,7 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     pass stabilize=False for the legacy path.
 
     ndomains is the radial subdomain count per branch. 32 is within 5e-12 of
-    150 on 17 orbits at tol 1e-6 and about half the time (dev/JAX_PERF.md).
+    150 on 14 orbits at tol 1e-6 and about half the time (dev/JAX_PERF.md).
 
     bucket="auto" pads each round's batch to the pipeline chunk size on GPU
     (one shared XLA trace instead of a recompile per round; big win on small

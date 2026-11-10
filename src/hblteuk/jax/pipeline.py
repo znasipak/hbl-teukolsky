@@ -95,6 +95,28 @@ def _chunk_size(max_memory_gb, nsamples, ndomains, nnodes, stabilize=False):
                                          stabilize)))
 
 
+
+def _bucket(B, cap=None):
+    """Padded batch size: next rung of four per octave (>= 64), at most cap.
+
+    Padding to the whole chunk wasted up to ~1.7x on small adaptive rounds;
+    rungs keep waste <= 25% and the set of compiled shapes small.
+    """
+    r = max(int(B), 64)
+    step = 2 ** (r.bit_length() - 3)
+    b = -(-r // step) * step
+    return b if cap is None else min(b, cap)
+
+
+def _chunk_plan(B, csize):
+    """Chunk size for B modes under cap csize: the same number of chunks,
+    split evenly and rounded to a rung, so the last is not mostly padding."""
+    if csize is None or csize >= B:
+        return csize
+    k = -(-B // csize)
+    return _bucket(-(-B // k), csize)
+
+
 class ModeTableSolution(NamedTuple):
     l: np.ndarray            # (B,)
     m: np.ndarray
@@ -173,6 +195,7 @@ def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
     B = len(l)
     csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1,
                         nnodes, stabilize)
+    csize = _chunk_plan(B, csize)
     if csize is None or csize >= B:
         lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
         amplitudes, errors = src.amplitudes, src.errors
@@ -293,6 +316,7 @@ def solve_spherical_mode_table(orbit, s, l, m, k, subdomains=None,
     B = len(l)
     csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1,
                         nnodes, stabilize)
+    csize = _chunk_plan(B, csize)
     if csize is None or csize >= B:
         lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
         amplitudes, errors = src.amplitudes, src.errors
@@ -498,6 +522,7 @@ def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
     B = len(l)
     csize = _chunk_size(max_memory_gb, nsamples, len(subs_up) - 1,
                         nnodes, stabilize)
+    csize = _chunk_plan(B, csize)
     if csize is None or csize >= B:
         lam, coupling, lmin, hom, src = solve_chunk(np.arange(B))
         amplitudes, errors = src.amplitudes, src.errors

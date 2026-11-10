@@ -127,3 +127,31 @@ def test_generic_chunked_matches_unchunked():
         **kw)
     np.testing.assert_allclose(np.asarray(chunked.amplitudes),
                                np.asarray(full.amplitudes), rtol=1e-8)
+
+
+def test_bucket_ladder():
+    # padded batch sizes: four rungs per octave, so <= 25% padding waste and a
+    # bounded set of compiled shapes; never above the memory cap
+    from hblteuk.jax.pipeline import _bucket
+    for B in (1, 63, 64, 65, 1000, 1038, 6992, 12345):
+        b = _bucket(B, 10**6)
+        assert B <= b <= max(64, 1.25 * B)
+        step = 2 ** (int(np.log2(b)) - 2)
+        assert b % step == 0
+    assert _bucket(1038, 600) == 600
+    assert _bucket(5, 10) == 10
+    assert _bucket(1038, 10**6) == 1280
+
+
+def test_chunk_plan_splits_evenly():
+    # B over the cap: equal chunks, not full chunks plus one mostly padding
+    from hblteuk.jax.pipeline import _chunk_plan
+    assert _chunk_plan(12256, 9157) == 6144            # 2 x 6144, was 2 x 9157
+    assert _chunk_plan(45, 10) == 10                   # 5 chunks, last ragged
+    assert _chunk_plan(100, None) is None
+    assert _chunk_plan(100, 200) == 200                # unchunked path
+    for B, cap in ((20880, 526), (58227, 9157), (77998, 2169)):
+        c = _chunk_plan(B, cap)
+        k = -(-B // c)
+        assert c <= cap and k == -(-B // cap)          # same chunk count
+        assert k * c - B < 0.25 * B + c

@@ -506,7 +506,7 @@ class _Stop(Exception):
 
 @pytest.mark.parametrize("given,expected", [(None, 32), (64, 64)])
 def test_total_fluxes_passes_ndomains_to_solver(monkeypatch, given, expected):
-    # default 32 radial subdomains (dev/JAX_PERF.md: <= 5e-12 from 150 on 17
+    # default 32 radial subdomains (dev/JAX_PERF.md: <= 5e-12 from 150 on 14
     # orbits at tol 1e-6); the chunk model and the solver must see the same
     from hblteuk.geo import MiniGeo
     from hblteuk.jax import driver, total_fluxes
@@ -525,3 +525,24 @@ def test_total_fluxes_passes_ndomains_to_solver(monkeypatch, given, expected):
             total_fluxes(MiniGeo(0.9, 10.0, 0.2, 0.7), tol=1e-2,
                          strategy=strategy, **kw)
         assert seen["ndomains"] == expected, strategy
+
+
+def test_bucketed_solve_pads_to_ladder(monkeypatch):
+    # small rounds pad to the next bucket rung, not to the whole chunk
+    from hblteuk.geo import MiniGeo
+    from hblteuk.jax import driver
+    from hblteuk.jax.pipeline import _bucket, _chunk_size
+
+    seen = {}
+
+    def fake(orbit, s, l, m, k, n, **kw):
+        seen["B"] = len(l)
+        raise _Stop
+
+    monkeypatch.setattr(driver, "solve_modes", fake)
+    arr = np.array([(2, 2, 0, 1)] * 1038)
+    with pytest.raises(_Stop):
+        driver._bucketed_solve(MiniGeo(0.9, 10.0, 0.2, 0.7), -2, arr, 512, 128,
+                               32.0, pad=True, ndomains=32)
+    cap = _chunk_size(32.0, 512, 32, 32, True)
+    assert cap > 2000 and seen["B"] == _bucket(1038, cap) == 1280
