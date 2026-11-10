@@ -498,3 +498,30 @@ def test_sum_fluxes_rejects_non_finite_modes():
                           errors=np.array(sol.errors))
     with pytest.raises(FloatingPointError, match=r"\(2, 1, 0, 1\)"):
         sum_fluxes(bad, orbit, tol=1e-6)
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("given,expected", [(None, 32), (64, 64)])
+def test_total_fluxes_passes_ndomains_to_solver(monkeypatch, given, expected):
+    # default 32 radial subdomains (dev/JAX_PERF.md: <= 5e-12 from 150 on 17
+    # orbits at tol 1e-6); the chunk model and the solver must see the same
+    from hblteuk.geo import MiniGeo
+    from hblteuk.jax import driver, total_fluxes
+
+    seen = {}
+
+    def fake(*a, **k):
+        seen.update(k)
+        raise _Stop
+
+    monkeypatch.setattr(driver, "solve_modes", fake)
+    kw = {} if given is None else dict(ndomains=given)
+    for strategy in ("box", "peak", "gradient"):
+        seen.clear()
+        with pytest.raises(_Stop):
+            total_fluxes(MiniGeo(0.9, 10.0, 0.2, 0.7), tol=1e-2,
+                         strategy=strategy, **kw)
+        assert seen["ndomains"] == expected, strategy
