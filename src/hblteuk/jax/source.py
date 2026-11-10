@@ -735,6 +735,29 @@ def _integrate_generic_fft2(s, kappa, a, En, Lz, gamma_mino, radial_arrs,
     return SourceAmplitudes(amps.T, err.T)
 
 
+def _generic_args(samples, lam, m, k, n, omega, S, dS, d2S, hom,
+                  subdomains_up, subdomains_in):
+    # positional arguments shared by every generic integrator core (s = -2)
+    sig = 2 * samples.kappa / (samples.rp - (1 - samples.kappa))
+    psi = _psi_at(hom, subdomains_up, subdomains_in, sig)
+    En, Lz, _ = samples.constants
+    radial_arrs = tuple(jnp.asarray(x) for x in
+                        (samples.rp, samples.urp, samples.tr, samples.phir,
+                         samples.qr))
+    polar_arrs = tuple(jnp.asarray(x) for x in
+                       (samples.thp, samples.uthp, samples.tth,
+                        samples.phith, samples.qth))
+    psi_arrs = tuple(psi) + (jnp.asarray(S), jnp.asarray(dS), jnp.asarray(d2S))
+    return (-2, samples.kappa, samples.a, En, Lz, samples.gamma,
+            radial_arrs, polar_arrs,
+            jnp.asarray(lam, dtype=jnp.complex128),
+            jnp.asarray(m, dtype=jnp.float64),
+            jnp.asarray(k, dtype=jnp.float64),
+            jnp.asarray(n, dtype=jnp.int64),
+            jnp.asarray(omega, dtype=jnp.complex128),
+            psi_arrs)
+
+
 def integrate_source_generic_batch(samples, lam, m, k, n, omega, S, dS, d2S,
                                    hom, subdomains_up, subdomains_in,
                                    method="fft"):
@@ -752,27 +775,8 @@ def integrate_source_generic_batch(samples, lam, m, k, n, omega, S, dS, d2S,
     """
     if method not in ("fft", "fft2"):
         raise ValueError("method must be 'fft' or 'fft2'")
-    s = -2
-    sig = 2 * samples.kappa / (samples.rp - (1 - samples.kappa))
-
-    psi = _psi_at(hom, subdomains_up, subdomains_in, sig)
-
-    En, Lz, _ = samples.constants
-    radial_arrs = tuple(jnp.asarray(x) for x in
-                        (samples.rp, samples.urp, samples.tr, samples.phir,
-                         samples.qr))
-    polar_arrs = tuple(jnp.asarray(x) for x in
-                       (samples.thp, samples.uthp, samples.tth,
-                        samples.phith, samples.qth))
-    psi_arrs = tuple(psi) + (jnp.asarray(S), jnp.asarray(dS), jnp.asarray(d2S))
-    args = (s, samples.kappa, samples.a, En, Lz, samples.gamma,
-            radial_arrs, polar_arrs,
-            jnp.asarray(lam, dtype=jnp.complex128),
-            jnp.asarray(m, dtype=jnp.float64),
-            jnp.asarray(k, dtype=jnp.float64),
-            jnp.asarray(n, dtype=jnp.int64),
-            jnp.asarray(omega, dtype=jnp.complex128),
-            psi_arrs)
+    args = _generic_args(samples, lam, m, k, n, omega, S, dS, d2S, hom,
+                         subdomains_up, subdomains_in)
     if method == "fft":
         return _integrate_generic_core(*args)
     return _integrate_generic_fft2(*args)
