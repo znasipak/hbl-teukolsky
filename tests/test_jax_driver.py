@@ -504,10 +504,15 @@ class _Stop(Exception):
     pass
 
 
-@pytest.mark.parametrize("given,expected", [(None, 32), (64, 64)])
-def test_total_fluxes_passes_ndomains_to_solver(monkeypatch, given, expected):
-    # default 32 radial subdomains (dev/JAX_PERF.md: <= 5e-12 from 150 on 14
-    # orbits at tol 1e-6); the chunk model and the solver must see the same
+@pytest.mark.parametrize("given,scheme,expected",
+                         [(None, None, 16), (64, None, 64),
+                          (None, "collocation", 32),
+                          (8, "collocation", 8)])
+def test_total_fluxes_passes_ndomains_to_solver(monkeypatch, given, scheme,
+                                                expected):
+    # default 16 ultraspherical subdomains (dev/ULTRASPHERICAL.md: <= 1.2e-11
+    # from 150 collocation domains on 14 orbits at tol 1e-6); the chunk model
+    # and the solver must see the same
     from hblteuk.geo import MiniGeo
     from hblteuk.jax import driver, total_fluxes
 
@@ -518,7 +523,11 @@ def test_total_fluxes_passes_ndomains_to_solver(monkeypatch, given, expected):
         raise _Stop
 
     monkeypatch.setattr(driver, "solve_modes", fake)
+    # collocation keeps its own validated default (16 collocation domains
+    # reach 7.3e-9, dev/JAX_PERF.md)
     kw = {} if given is None else dict(ndomains=given)
+    if scheme is not None:
+        kw["scheme"] = scheme
     for strategy in ("box", "peak", "gradient"):
         seen.clear()
         with pytest.raises(_Stop):
@@ -598,3 +607,30 @@ def test_total_fluxes_passes_scheme_to_solver(monkeypatch, given, expected):
             total_fluxes(MiniGeo(0.9, 10.0, 0.2, 0.7), tol=1e-2,
                          strategy=strategy, **kw)
         assert seen["scheme"] == expected, strategy
+
+
+def test_ultraspherical_default_matches_reference():
+    # total_fluxes' default radial resolution against collocation at 150
+    # domains on a random canonical table of the reference orbit: flux totals
+    # within the 1e-9 bar
+    import inspect
+    from hblteuk.jax import driver, total_fluxes
+    from hblteuk.jax.driver import sum_fluxes
+    sc = inspect.signature(total_fluxes).parameters["scheme"].default
+    assert sc == "ultraspherical"
+    nd = driver._NDOMAINS[sc]
+    orbit = MiniGeo(0.9, 8.0, 0.3, 0.7)
+    rng = np.random.default_rng(11)
+    pool = [(l, m, k, n) for l in range(2, 7) for m in range(1, l + 1)
+            for k in range(-3, 4) for n in range(-6, 7)]
+    arr = np.array([pool[i] for i in rng.choice(len(pool), 40, replace=False)])
+    T = {}
+    for key, kw in (("ref", dict(ndomains=150, scheme="collocation")),
+                    ("default", dict(ndomains=nd, scheme=sc))):
+        sol = driver._bucketed_solve(orbit, -2, arr, nsamples=2**9,
+                                     ntheta=2**7, max_memory_gb=8.0,
+                                     pad=False, **kw)
+        fx = sum_fluxes(sol, orbit)
+        T[key] = np.array([fx.Edot, fx.Ldot, fx.Qdot])
+    rel = np.abs(T["default"] - T["ref"]) / np.abs(T["ref"])
+    assert np.all(rel < 1e-9), rel

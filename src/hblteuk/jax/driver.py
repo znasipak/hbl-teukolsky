@@ -12,6 +12,7 @@ from .fluxes import flux_modes
 from .pipeline import (GenericModeSolution, _bucket, _chunk_size,
                        solve_generic_mode_table, solve_mode_table,
                        solve_spherical_mode_table)
+from .ultraspherical import check_scheme
 
 
 def _as_generic(sol, k, n):
@@ -418,10 +419,15 @@ class _Accum:
                                sol.k.tolist(), sol.n.tolist()))
 
 
+# radial subdomains per branch that hold flux totals to 1e-9 of 150
+# collocation domains on the 14-orbit survey, per scheme
+_NDOMAINS = {"ultraspherical": 16, "collocation": 32}
+
+
 def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
                  strategy="box", verbose=False, bucket="auto",
                  stabilize=True, k_cap=None, n_cap=None,
-                 max_modes=100_000, ndomains=32, scheme="ultraspherical"):
+                 max_modes=100_000, ndomains=None, scheme="ultraspherical"):
     """Adaptive staged-round flux driver. strategy="box" grows a full
     rectangular canonical (l, m, k, n) window; strategy="peak" grows four
     knobs (k_ext, n_ext, dm, dl) around the spectral ridges l ~ |m+k| and
@@ -449,8 +455,11 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     scheme selects the radial ODE rows ("ultraspherical" or "collocation",
     teukolsky.solve_homogeneous_batch).
 
-    ndomains is the radial subdomain count per branch. 32 is within 5e-12 of
-    150 on 14 orbits at tol 1e-6 and about half the time (dev/JAX_PERF.md).
+    ndomains is the radial subdomain count per branch; None picks the
+    scheme's validated default (_NDOMAINS). Ultraspherical 16 is within
+    1.2e-11 of 150 collocation domains on 14 orbits at tol 1e-6 (8 reaches
+    2e-8 at a=0.99, p=20, e=0.6; dev/ULTRASPHERICAL.md); collocation needs 32
+    (16 reaches 7.3e-9; dev/JAX_PERF.md).
 
     bucket="auto" pads each round's batch to the pipeline chunk size on GPU
     (one shared XLA trace instead of a recompile per round; big win on small
@@ -461,6 +470,8 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
         raise ValueError(
             f"strategy must be 'box', 'peak', or 'gradient', got {strategy!r}")
     pad = _want_bucket(bucket)
+    if ndomains is None:
+        ndomains = _NDOMAINS[check_scheme(scheme)]
     if strategy == "gradient":
         return _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb,
                                       verbose, pad, stabilize, k_cap, n_cap,
@@ -476,7 +487,7 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
 
 def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                       pad=False, stabilize=True, k_cap=None, n_cap=None,
-                      max_modes=100_000, ndomains=32, scheme="ultraspherical"):
+                      max_modes=100_000, ndomains=16, scheme="ultraspherical"):
     """Adaptive staged-round flux driver: grows a rectangular canonical
     (l, m, k, n) window in batched rounds until every axis' edge
     contribution < tol x running total per channel (l axis: last two
@@ -579,7 +590,7 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
 def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                        pad=False, stabilize=True, k_cap=None, n_cap=None,
-                       max_modes=100_000, ndomains=32,
+                       max_modes=100_000, ndomains=16,
                        scheme="ultraspherical"):
     # iterate (l, m) naturally to lmax; band k, n around their (l, m)-peaks
     # with half-widths dk, dn. Three adaptive knobs. l uses the box two-slab
@@ -686,7 +697,7 @@ def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
 def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                            pad=False, stabilize=True, k_cap=None, n_cap=None,
-                           max_modes=100_000, ndomains=32,
+                           max_modes=100_000, ndomains=16,
                            scheme="ultraspherical"):
     """Decay-predicted adaptive driver. Grows four directions (L, M, K, N),
     each to the extent its estimated geometric flux tail needs to fall under
