@@ -760,23 +760,28 @@ def _generic_args(samples, lam, m, k, n, omega, S, dS, d2S, hom,
 
 def integrate_source_generic_batch(samples, lam, m, k, n, omega, S, dS, d2S,
                                    hom, subdomains_up, subdomains_in,
-                                   method="fft"):
+                                   method="bilinear"):
     """Batched Teukolsky-mode amplitudes for a generic orbit (2D torus).
 
     samples: GenericSamples. lam/m/k/n/omega: (B,) mode table (s = -2,
     omega = m*Omega_phi + k*Omega_theta + n*Omega_r). S/dS/d2S: (B, nth)
-    from polar_swsh_values on samples.thp. method: "fft" (lax.scan over
-    q_theta, O(B*nq) working set, staggered-theta + FFT-tail error
-    estimates) or "fft2" (materializes (B, nth, nq) -- small-batch
-    diagnostic only).
+    from polar_swsh_values on samples.thp. method: "bilinear" (default;
+    the theta sum as 12 matrix products, source_bilinear.py, ~10x faster on
+    GPU), "fft" (lax.scan over q_theta) or "fft2" (materializes
+    (B, nth, nq) -- small-batch diagnostic only). All three share the bin
+    extraction and the staggered-theta + FFT-tail error estimates; bilinear
+    bounds the cancellation floor from above.
 
     Returns SourceAmplitudes with amplitudes (B, 2) ordered [In, Up] and
     relative error estimates (B, 2).
     """
-    if method not in ("fft", "fft2"):
-        raise ValueError("method must be 'fft' or 'fft2'")
+    if method not in ("bilinear", "fft", "fft2"):
+        raise ValueError("method must be 'bilinear', 'fft' or 'fft2'")
     args = _generic_args(samples, lam, m, k, n, omega, S, dS, d2S, hom,
                          subdomains_up, subdomains_in)
+    if method == "bilinear":
+        from .source_bilinear import _integrate_generic_bilinear
+        return _integrate_generic_bilinear(*args)
     if method == "fft":
         return _integrate_generic_core(*args)
     return _integrate_generic_fft2(*args)

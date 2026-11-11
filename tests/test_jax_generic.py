@@ -80,7 +80,7 @@ def run_gen(gen_setup, method, samples=None):
                                           hom, su, si, method=method)
 
 
-@pytest.mark.parametrize("method", ["fft", "fft2"])
+@pytest.mark.parametrize("method", ["bilinear", "fft", "fft2"])
 def test_amplitudes_vs_pybhpt(ref, gen_setup, method):
     # THE gate: batched generic Z == pybhpt Z, magnitude AND phase
     t = ref["gen_table"]
@@ -98,6 +98,30 @@ def test_contraction_equals_ifft2(gen_setup):
     a1 = np.asarray(run_gen(gen_setup, "fft").amplitudes)
     a2 = np.asarray(run_gen(gen_setup, "fft2").amplitudes)
     np.testing.assert_allclose(a1, a2, rtol=1e-12)
+
+
+def test_bilinear_equals_fft(gen_setup):
+    # same amplitudes where resolved, within the stated error elsewhere; error
+    # estimates no smaller beyond the estimates' own roundoff
+    # (tests/test_jax_bilinear.py)
+    old, new = run_gen(gen_setup, "fft"), run_gen(gen_setup, "bilinear")
+    a0, e0 = np.asarray(old.amplitudes), np.asarray(old.errors)
+    a1, e1 = np.asarray(new.amplitudes), np.asarray(new.errors)
+    rel = np.abs(a1 - a0) / np.abs(a0)
+    good = e0 < 1e-8
+    assert good.mean() > 0.9
+    assert np.all(rel[good] < 1e-12)
+    assert np.all(rel[~good] <= np.maximum(e0, e1)[~good])
+    assert np.all(e1 >= 0.99 * e0 - 1e-14)
+
+
+def test_generic_default_is_bilinear(gen_setup):
+    import inspect
+    from hblteuk.jax.pipeline import solve_generic_mode_table as solve
+    for fn in (integrate_source_generic_batch, solve):
+        assert inspect.signature(fn).parameters["method"].default == "bilinear"
+    with pytest.raises(ValueError, match="'bilinear', 'fft' or 'fft2'"):
+        run_gen(gen_setup, "scan")
 
 
 def test_error_estimates(gen_orbit, gen_setup):

@@ -464,7 +464,7 @@ class GenericModeSolution(NamedTuple):
 
 def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
                              ndomains=150, nnodes=32, spacing="arcsinh7",
-                             nsamples=2**10, ntheta=2**8, method="fft",
+                             nsamples=2**10, ntheta=2**8, method="bilinear",
                              max_memory_gb=8.0, return_radial=True,
                              stabilize=True):
     """Solve a radiative (s = -2) generic-orbit mode table end to end.
