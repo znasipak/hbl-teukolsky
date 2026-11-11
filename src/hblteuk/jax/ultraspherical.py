@@ -16,6 +16,13 @@ import numpy as np
 DEG = 3                     # max polynomial degree of P, Q, U
 X_FIT = np.cos(np.pi * (2 * np.arange(DEG + 1) + 1) / (2 * (DEG + 1)))
 V_INV = np.linalg.inv(np.vander(X_FIT, DEG + 1, increasing=True))
+SCHEMES = ("ultraspherical", "collocation")
+
+
+def check_scheme(scheme):
+    if scheme not in SCHEMES:
+        raise ValueError("scheme must be 'ultraspherical' or 'collocation'")
+    return scheme
 
 
 def _x_mult(lam, N):

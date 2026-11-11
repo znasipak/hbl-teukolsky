@@ -235,3 +235,87 @@ def test_parallel_march_matches_reference(orbit, subs, s):
         # under-resolved domain)
         np.testing.assert_allclose(np.asarray(e_new), np.asarray(e_ref),
                                    rtol=1e-2, atol=1e-11)
+
+
+@pytest.mark.parametrize("s", [-2, 2])
+def test_ultraspherical_march_matches_collocation(orbit, subs, s):
+    # Resolved stable-branch modes: same answer as collocation at 150 x 32 to
+    # the test_parallel_march_matches_reference bound. Elsewhere (unstable
+    # branches; (30, 25, 0) and (40, -40, 2), which collocation itself gets
+    # wrong by 1e-5 / 2e-7 at n = 32) judge both against n = 64 collocation:
+    # ultraspherical no worse than 10x collocation. Both schemes run back to
+    # back so a shared trace would show up here.
+    import jax.numpy as jnp
+    from hblteuk.jax.collocation import solve_fixed_multidomain_batch
+    from hblteuk.jax.teukolsky import (boundary_conditions_in,
+                                       boundary_conditions_up)
+    modes = MODES + [(30, 25, 0), (40, -40, 2)]
+    hard = {(30, 25, 0), (40, -40, 2)}
+    om = jnp.array([orbit.mode_frequency(m, 0, n) for _, m, n in modes])
+    lam = jnp.array([swsh_eigenvalue(s, l, m, A * w)
+                     for (l, m, _), w in zip(modes, np.asarray(om))])
+    ma = jnp.array([m * A for _, m, _ in modes], dtype=jnp.float64)
+
+    def pqu(z):
+        return teuk_pqu(z, KAPPA, s, lam, ma, om)
+
+    stable = "in" if s == -2 else "up"
+    pts = sample_points(subs)
+    for fam, bc, sub, sig in [("up", boundary_conditions_up, subs[0], pts[0]),
+                              ("in", boundary_conditions_in, subs[1], pts[1])]:
+        y0 = bc(KAPPA, s, lam, ma, om)
+        c_col, _ = solve_fixed_multidomain_batch(pqu, y0, sub, n=NNODE)
+        c_us, e_us = solve_fixed_multidomain_batch(pqu, y0, sub, n=NNODE,
+                                                   scheme="ultraspherical")
+        c_ref, _ = solve_fixed_multidomain_batch(pqu, y0, sub, n=64)
+        v_col, v_us, v_ref = (np.asarray(evaluate_multidomain(c, sub, sig))
+                              for c in (c_col, c_us, c_ref))
+        v_col, v_us, v_ref = (v / v[:, :1] for v in (v_col, v_us, v_ref))
+        c_col, c_us, e_us = (np.asarray(x) for x in (c_col, c_us, e_us))
+        assert np.all(np.isfinite(e_us))
+        for b, mode in enumerate(modes):
+            if fam == stable and mode not in hard:
+                err = (np.max(np.abs(c_us[b] - c_col[b]))
+                       / np.max(np.abs(c_col[b])))
+                assert err < 1e-11, f"s={s} {fam} {mode}: {err:.2e}"
+                assert e_us[b].max() < 1e-8, f"s={s} {fam} {mode}"
+            else:
+                e_u, e_c = (np.max(np.abs(v[b] - v_ref[b]) / np.abs(v_ref[b]))
+                            for v in (v_us, v_col))
+                assert e_u <= max(10 * e_c, 1e-12), \
+                    f"s={s} {fam} {mode}: us {e_u:.2e} col {e_c:.2e}"
+
+
+def test_ultraspherical_fewer_domains(orbit, subs, batch):
+    # at 8 domains ultraspherical is never worse than collocation and holds
+    # 1e-9 on the low-l modes, against 150 collocation domains (stabilized).
+    # (10, 7, 0) In needs more domains on this orbit: 5.7e-5 here, 0.16 for
+    # collocation; the driver default is set from flux totals (Task 4).
+    _, lam, ma, om = batch
+    smax, smin = subs[0][-1], subs[1][-1]
+    su = generate_subdomain_list([0, smax], 8, "arcsinh7")
+    si = generate_subdomain_list([1, smin], 8, "arcsinh7")
+    ref = solve_homogeneous_batch(-2, KAPPA, lam, ma, om, subs[0], subs[1],
+                                  n=NNODE, scheme="collocation")
+    got = {sc: solve_homogeneous_batch(-2, KAPPA, lam, ma, om, su, si,
+                                       n=NNODE, scheme=sc)
+           for sc in ("ultraspherical", "collocation")}
+    low_l = np.array([l <= 4 for l, _, _ in MODES])
+    for k, (sub8, sig) in enumerate(zip((su, si), sample_points(subs))):
+        b = np.asarray(evaluate_multidomain(ref[k], subs[k], sig))
+        b = b / b[:, :1]
+        err = {}
+        for sc, h in got.items():
+            a = np.asarray(evaluate_multidomain(h[k], sub8, sig))
+            err[sc] = np.max(np.abs(a / a[:, :1] - b) / np.abs(b), axis=1)
+        fam = ("up", "in")[k]
+        assert np.all(err["ultraspherical"]
+                      <= np.maximum(err["collocation"], 1e-12)), fam
+        assert np.all(err["ultraspherical"][low_l] < 1e-9), fam
+
+
+def test_scheme_rejected(subs, batch):
+    _, lam, ma, om = batch
+    with pytest.raises(ValueError, match="scheme must be"):
+        solve_homogeneous_batch(-2, KAPPA, lam, ma, om, subs[0], subs[1],
+                                n=NNODE, scheme="tau")

@@ -26,6 +26,7 @@ from ..teuk import (hbl_teukolsky_starobinsky_system_minus_to_plus_2,
                     hbl_teukolsky_starobinsky_system_plus_to_minus_2)
 from .chebyshev import collocation_matrices
 from .teukolsky import _bc_ratio, teuk_pqu
+from .ultraspherical import check_scheme, equation_rows
 
 # which branch each spin must borrow, and from where
 _SPEC = {-2: ("up", 2, hbl_teukolsky_starobinsky_system_plus_to_minus_2),
@@ -42,11 +43,12 @@ def flipped_spin(s):
     return _SPEC[s][1] if s in _SPEC else None
 
 
-# static: kappa, s_target, n, chtype, renormalize. One compiled program per
-# chunk shape; eager dispatch cost ~22 ms per chunk on H200 (dev/JAX_PERF.md).
-@functools.partial(jax.jit, static_argnums=(2, 3, 7, 8, 9))
+# static: kappa, s_target, n, chtype, renormalize, scheme. One compiled
+# program per chunk shape; eager dispatch cost ~22 ms per chunk on H200
+# (dev/JAX_PERF.md).
+@functools.partial(jax.jit, static_argnums=(2, 3, 7, 8, 9, 10))
 def _ts_solve_core(coeffs_src, sub, kappa, s_target, lam, ma, omega, n, chtype,
-                   renormalize):
+                   renormalize, scheme):
     transform_sys = _SPEC[s_target][2]
 
     mats = collocation_matrices(n, chtype)
@@ -87,12 +89,18 @@ def _ts_solve_core(coeffs_src, sub, kappa, s_target, lam, ma, omega, n, chtype,
     tsL = fL*psiL + gL*dpsiL
     tsR = fR*psiR + gR*dpsiR
 
-    # collocation system, two rows replaced by the TS Dirichlet conditions
-    M = (P[..., None]*T2[None, None]
-         + (dzdx[None, :, None]*Q)[..., None]*T1[None, None]
-         + (dzdx[None, :, None]**2*U)[..., None]*T0[None, None])
-    M = M.at[:, :, 0, :].set(bcL)
-    M = M.at[:, :, 1, :].set(bcR)
+    # ODE rows with the two TS Dirichlet conditions on top
+    if scheme == "ultraspherical":
+        L = equation_rows(lambda zz: teuk_pqu(zz, kappa, s_target, lam, ma,
+                                              omega), z0, z1, n)
+        top = jnp.broadcast_to(jnp.stack([bcL, bcR]), L.shape[:2] + (2, n))
+        M = jnp.concatenate([top.astype(L.dtype), L], axis=2)
+    else:
+        M = (P[..., None]*T2[None, None]
+             + (dzdx[None, :, None]*Q)[..., None]*T1[None, None]
+             + (dzdx[None, :, None]**2*U)[..., None]*T0[None, None])
+        M = M.at[:, :, 0, :].set(bcL)
+        M = M.at[:, :, 1, :].set(bcR)
     rhs = jnp.zeros(M.shape[:3], dtype=M.dtype)
     rhs = rhs.at[:, :, 0].set(tsL)
     rhs = rhs.at[:, :, 1].set(tsR)
@@ -114,7 +122,7 @@ def _ts_solve_core(coeffs_src, sub, kappa, s_target, lam, ma, omega, n, chtype,
 
 
 def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
-                   n=32, chtype=1, renormalize=True):
+                   n=32, chtype=1, renormalize=True, scheme="collocation"):
     """Map a batched opposite-spin solution to s_target via Teukolsky-Starobinsky.
 
     coeffs_src: (B, D, n) Chebyshev coefficients of the *stable* solve, on the
@@ -123,10 +131,12 @@ def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
     Returns (B, D, n) coefficients of the s_target solution.
 
     Every subdomain is independent here -- unlike the marching solver there is
-    no scan, so this batches flat.
+    no scan, so this batches flat. scheme selects the ODE rows, as in
+    collocation.solve_fixed_multidomain_batch.
     """
     if s_target not in _SPEC:
         raise ValueError(f"no TS stabilization defined for s={s_target}")
+    check_scheme(scheme)
     # fixed dtypes: a real lam would compile a second program with different
     # roundoff
     return _ts_solve_core(jnp.asarray(coeffs_src, dtype=jnp.complex128),
@@ -135,4 +145,4 @@ def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
                           jnp.asarray(lam, dtype=jnp.complex128),
                           jnp.asarray(ma, dtype=jnp.float64),
                           jnp.asarray(omega, dtype=jnp.complex128),
-                          int(n), int(chtype), bool(renormalize))
+                          int(n), int(chtype), bool(renormalize), scheme)

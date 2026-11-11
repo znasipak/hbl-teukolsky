@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .collocation import solve_fixed_multidomain_batch
+from .ultraspherical import check_scheme
 
 
 def teuk_pqu(sigma, kappa, s, lam, ma, omega):
@@ -53,26 +54,28 @@ class HomogeneousBatch(NamedTuple):
     errors_in: jax.Array   # (B, D_in)
 
 
-@functools.partial(jax.jit, static_argnums=(0, 1, 6, 7))
-def _solve_branch(s, kappa, lam, ma, omega, subs, n, branch):
+@functools.partial(jax.jit, static_argnums=(0, 1, 6, 7, 8))
+def _solve_branch(s, kappa, lam, ma, omega, subs, n, branch,
+                  scheme="collocation"):
     # one family's march: "up" from sigma = 0, "in" from sigma = 1
     def pqu(z):
         return teuk_pqu(z, kappa, s, lam, ma, omega)
 
     bc = boundary_conditions_up if branch == "up" else boundary_conditions_in
     return solve_fixed_multidomain_batch(pqu, bc(kappa, s, lam, ma, omega),
-                                         subs, n=n)
+                                         subs, n=n, scheme=scheme)
 
 
-def _solve_core(s, kappa, lam, ma, omega, subs, n):
+def _solve_core(s, kappa, lam, ma, omega, subs, n, scheme="collocation"):
     subs_up, subs_in = subs
-    cu, eu = _solve_branch(s, kappa, lam, ma, omega, subs_up, n, "up")
-    ci, ei = _solve_branch(s, kappa, lam, ma, omega, subs_in, n, "in")
+    cu, eu = _solve_branch(s, kappa, lam, ma, omega, subs_up, n, "up", scheme)
+    ci, ei = _solve_branch(s, kappa, lam, ma, omega, subs_in, n, "in", scheme)
     return HomogeneousBatch(cu, ci, eu, ei)
 
 
 def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
-                            subdomains_in, n=32, stabilize=True):
+                            subdomains_in, n=32, stabilize=True,
+                            scheme="collocation"):
     """Batched Up and In homogeneous solutions on shared subdomain structures.
 
     s: spin weight (python int); kappa = sqrt(1 - a^2) (python float);
@@ -90,8 +93,12 @@ def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
     the stabilized branch belong to the opposite-spin march that actually ran.
     On by default since 2026-07-27; pass stabilize=False for the legacy path.
 
+    scheme: "ultraspherical" or "collocation" ODE rows for every march and
+    the TS map (collocation.solve_fixed_multidomain_batch).
+
     Returns HomogeneousBatch; evaluate with chebyshev.evaluate_multidomain.
     """
+    check_scheme(scheme)
     lam = jnp.asarray(lam, dtype=jnp.complex128)
     ma = jnp.asarray(ma, dtype=jnp.float64)
     omega = jnp.asarray(omega, dtype=jnp.complex128)
@@ -110,7 +117,8 @@ def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
     from .starobinsky import flipped_spin, ts_solve_batch, unstable_branch
     branch = unstable_branch(int(s)) if stabilize else None
     if branch is None:
-        return _solve_core(int(s), float(kappa), lam, ma, omega, subs, int(n))
+        return _solve_core(int(s), float(kappa), lam, ma, omega, subs, int(n),
+                           scheme)
 
     # solve at the opposite spin, where this branch's march is stable, and map
     # back. lambda_CH = lambda_s + s(s+1) is spin invariant, so the flipped
@@ -121,12 +129,12 @@ def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
     stable = "in" if branch == "up" else "up"
     sub = {"up": subs[0], "in": subs[1]}
     cf, ef = _solve_branch(int(s_flip), float(kappa), lam_flip, ma, omega,
-                           sub[branch], int(n), branch)
+                           sub[branch], int(n), branch, scheme)
     cs, es = _solve_branch(int(s), float(kappa), lam, ma, omega,
-                           sub[stable], int(n), stable)
+                           sub[stable], int(n), stable, scheme)
     subs_np = subs_up if branch == "up" else subs_in
     ct = ts_solve_batch(cf, subs_np, float(kappa), int(s), lam, ma, omega,
-                        n=int(n))
+                        n=int(n), scheme=scheme)
     if branch == "up":
         return HomogeneousBatch(ct, cs, ef, es)
     return HomogeneousBatch(cs, ct, es, ef)

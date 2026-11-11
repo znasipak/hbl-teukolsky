@@ -334,3 +334,27 @@ def test_ts_renormalization_is_exact_at_low_frequency(target, branch):
     if branch == "up":
         np.testing.assert_allclose(ratio, 16 * om**4, rtol=1e-12)
     np.testing.assert_allclose(out[:, 7, 3] * ratio, raw[:, 7, 3], rtol=1e-12)
+
+
+def test_ts_ultraspherical_matches_collocation(geom):
+    orbit, su, si, _, _ = geom
+    om = np.array([orbit.mode_frequency(m, 0, n) for _, m, n in MODES])
+    lam = np.array([swsh_eigenvalue(-2, l, m, A * w)
+                    for (l, m, _), w in zip(MODES, om)])
+    ma = np.array([m * A for _, m, _ in MODES])
+    flip = solve_homogeneous_batch(2, KAPPA, lam - 4.0, ma, om, su, si,
+                                   n=NNODE)
+    col, us = (np.asarray(ts_solve_batch(flip.coeffs_up, su, KAPPA, -2, lam,
+                                         ma, om, n=NNODE, scheme=sc))
+               for sc in ("collocation", "ultraspherical"))
+    for b in range(len(MODES)):
+        err = np.max(np.abs(us[b] - col[b])) / np.max(np.abs(col[b]))
+        assert err < 1e-11, f"{MODES[b]}: {err:.2e}"
+
+
+def test_ts_scheme_rejected(geom):
+    _, su, _, _, _ = geom
+    c = np.zeros((1, len(su) - 1, NNODE), complex)
+    with pytest.raises(ValueError, match="scheme must be"):
+        ts_solve_batch(c, su, KAPPA, -2, [2.0], [0.0], [0.1], n=NNODE,
+                       scheme="tau")

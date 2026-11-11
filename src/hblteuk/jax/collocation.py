@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from .chebyshev import collocation_matrices
+from .ultraspherical import check_scheme, equation_rows
 
 
 def _step(pqu_fn, mats, carry, xs):
@@ -75,7 +76,8 @@ def _transfer(carry, xs):
     return (psi_end, dpsi_end), (psi, dpsi)
 
 
-def solve_fixed_multidomain_batch(pqu_fn, y0, subdomains, n=32, chtype=1):
+def solve_fixed_multidomain_batch(pqu_fn, y0, subdomains, n=32, chtype=1,
+                                  scheme="collocation"):
     """Solve P psi'' + Q psi' + U psi = 0 for a batch of modes on a shared
     fixed subdomain structure.
 
@@ -84,17 +86,28 @@ def solve_fixed_multidomain_batch(pqu_fn, y0, subdomains, n=32, chtype=1):
     subdomains: (ndomains+1,) monotone (either direction); the march starts
     at subdomains[0] where y0 is imposed, exactly like the CPU solver.
 
+    scheme="ultraspherical" builds the n-2 equation rows in coefficient
+    space (jax/ultraspherical.py; needs P, Q, U cubic in z) instead of at
+    the nodes. Unknowns and boundary rows are the same either way.
+
     Returns (coeffs (B, ndomains, n) complex, errors (B, ndomains)); errors
     are relative per-domain residuals ||M_ode @ c|| / ||c|| (the CPU
-    CoefficientGenerator metric, normalized by the solution magnitude).
+    CoefficientGenerator metric, normalized by the solution magnitude), at
+    the collocation nodes for both schemes.
     """
     mats, z_nodes_all, dzdx_all = _setup(subdomains, n, chtype)
     P, Q, U = (x.swapaxes(0, 1) for x in jax.vmap(pqu_fn)(z_nodes_all))
-    dz = dzdx_all[None, :, None, None]                       # (1, D, 1, 1)
-    M = (P[..., None] * mats["T2"] + dz * Q[..., None] * mats["T1"]
-         + dz**2 * U[..., None] * mats["T0"])                # (B, D, n, n)
-    M = M.at[:, :, 0, :].set(mats["bc_left"][0])
-    M = M.at[:, :, 1, :].set(mats["bc_left"][1])
+    if check_scheme(scheme) == "ultraspherical":
+        sub = jnp.asarray(subdomains, dtype=jnp.float64)
+        L = equation_rows(pqu_fn, sub[:-1], sub[1:], n)      # (B, D, n-2, n)
+        bcl = jnp.broadcast_to(mats["bc_left"], L.shape[:2] + (2, n))
+        M = jnp.concatenate([bcl.astype(L.dtype), L], axis=2)
+    else:
+        dz = dzdx_all[None, :, None, None]                   # (1, D, 1, 1)
+        M = (P[..., None] * mats["T2"] + dz * Q[..., None] * mats["T1"]
+             + dz**2 * U[..., None] * mats["T0"])            # (B, D, n, n)
+        M = M.at[:, :, 0, :].set(mats["bc_left"][0])
+        M = M.at[:, :, 1, :].set(mats["bc_left"][1])
 
     # u (psi=1, y1=0) and v (psi=0, y1=1) per domain, all domains at once
     rhs = jnp.zeros(M.shape[:3] + (2,), dtype=M.dtype)
