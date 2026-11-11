@@ -56,7 +56,7 @@ class HomogeneousBatch(NamedTuple):
 
 @functools.partial(jax.jit, static_argnums=(0, 1, 6, 7, 8))
 def _solve_branch(s, kappa, lam, ma, omega, subs, n, branch,
-                  scheme="collocation"):
+                  scheme="ultraspherical"):
     # one family's march: "up" from sigma = 0, "in" from sigma = 1
     def pqu(z):
         return teuk_pqu(z, kappa, s, lam, ma, omega)
@@ -66,7 +66,7 @@ def _solve_branch(s, kappa, lam, ma, omega, subs, n, branch,
                                          subs, n=n, scheme=scheme)
 
 
-def _solve_core(s, kappa, lam, ma, omega, subs, n, scheme="collocation"):
+def _solve_core(s, kappa, lam, ma, omega, subs, n, scheme="ultraspherical"):
     subs_up, subs_in = subs
     cu, eu = _solve_branch(s, kappa, lam, ma, omega, subs_up, n, "up", scheme)
     ci, ei = _solve_branch(s, kappa, lam, ma, omega, subs_in, n, "in", scheme)
@@ -75,7 +75,7 @@ def _solve_core(s, kappa, lam, ma, omega, subs, n, scheme="collocation"):
 
 def solve_homogeneous_batch(s, kappa, lam, ma, omega, subdomains_up,
                             subdomains_in, n=32, stabilize=True,
-                            scheme="collocation"):
+                            scheme="ultraspherical"):
     """Batched Up and In homogeneous solutions on shared subdomain structures.
 
     s: spin weight (python int); kappa = sqrt(1 - a^2) (python float);

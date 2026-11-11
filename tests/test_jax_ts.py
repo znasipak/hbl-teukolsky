@@ -232,8 +232,9 @@ def test_stabilized_marches_each_branch_once(geom, monkeypatch):
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize("scheme", ["ultraspherical", "collocation"])
 @pytest.mark.parametrize("s", [-2, 2])
-def test_stabilized_equals_core_reference(geom, s):
+def test_stabilized_equals_core_reference(geom, s, scheme):
     # the pre-optimization route: both branches at both spins, keep one each
     from hblteuk.jax.teukolsky import _solve_core
     orbit, su, si, _, _ = geom
@@ -245,19 +246,20 @@ def test_stabilized_equals_core_reference(geom, s):
     args = (float(KAPPA),)
     flip = _solve_core(s_flip, *args, jnp.asarray(lam_flip, dtype=complex),
                        jnp.asarray(ma), jnp.asarray(om, dtype=complex),
-                       subs, NNODE)
+                       subs, NNODE, scheme)
     plain = _solve_core(s, *args, jnp.asarray(lam, dtype=complex),
                         jnp.asarray(ma), jnp.asarray(om, dtype=complex),
-                        subs, NNODE)
+                        subs, NNODE, scheme)
     new = solve_homogeneous_batch(s, KAPPA, lam, ma, om, su, si, n=NNODE,
-                                  stabilize=True)
+                                  stabilize=True, scheme=scheme)
     if unstable_branch(s) == "up":
         ref = (ts_solve_batch(flip.coeffs_up, su, KAPPA, s, lam, ma, om,
-                              n=NNODE), plain.coeffs_in,
+                              n=NNODE, scheme=scheme), plain.coeffs_in,
                flip.errors_up, plain.errors_in)
     else:
         ref = (plain.coeffs_up, ts_solve_batch(flip.coeffs_in, si, KAPPA, s,
-                                               lam, ma, om, n=NNODE),
+                                               lam, ma, om, n=NNODE,
+                                               scheme=scheme),
                plain.errors_up, flip.errors_in)
     for got, want in zip(new, ref):
         np.testing.assert_allclose(np.asarray(got), np.asarray(want),

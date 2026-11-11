@@ -135,7 +135,7 @@ class ModeTableSolution(NamedTuple):
 def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
                      nnodes=32, spacing="arcsinh7", nsamples=2**10,
                      method="fft", max_memory_gb=8.0, return_radial=True,
-                     stabilize=True):
+                     stabilize=True, scheme="ultraspherical"):
     """Solve a radiative (s = -2, equatorial) mode table end to end.
 
     l, m, n: (B,) integer arrays; every mode must be radiative (omega != 0).
@@ -148,6 +148,8 @@ def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
     None disables chunking.
     return_radial=False drops the homogeneous-solution coefficients
     (hom=None) to bound output memory in flux-only workflows.
+    scheme: radial ODE rows, "ultraspherical" or "collocation"
+    (teukolsky.solve_homogeneous_batch).
     """
     l = np.asarray(l, dtype=np.int64)
     m = np.asarray(m, dtype=np.int64)
@@ -183,7 +185,8 @@ def solve_mode_table(orbit, s, l, m, n, subdomains=None, ndomains=150,
         lam = np.asarray(lam)
         hom = _stage("radial", solve_homogeneous_batch,
                      s, kappa, lam, m[idx] * a, omega[idx],
-                     subs_up, subs_in, n=nnodes, stabilize=stabilize)
+                     subs_up, subs_in, n=nnodes, stabilize=stabilize,
+                     scheme=scheme)
         S, dS, d2S = _stage("angular", equatorial_swsh_values,
                             s, m[idx], lmin, np.asarray(coupling), lam,
                             g[idx])
@@ -259,7 +262,8 @@ class SphericalModeSolution(NamedTuple):
 def solve_spherical_mode_table(orbit, s, l, m, k, subdomains=None,
                                ndomains=150, nnodes=32, spacing="arcsinh7",
                                nsamples=2**8, method="fft", stabilize=True,
-                               max_memory_gb=8.0, return_radial=True):
+                               max_memory_gb=8.0, return_radial=True,
+                               scheme="ultraspherical"):
     """Solve a radiative (s = -2) spherical-inclined mode table end to end.
 
     orbit: MiniGeo with e = 0 (any |x| <= 1). l, m, k: (B,) integers;
@@ -301,7 +305,8 @@ def solve_spherical_mode_table(orbit, s, l, m, k, subdomains=None,
         lam = np.asarray(lam)
         hom = _stage("radial", solve_homogeneous_batch,
                      s, kappa, lam, m[idx] * a, omega[idx],
-                     subs_up, subs_in, n=nnodes, stabilize=stabilize)
+                     subs_up, subs_in, n=nnodes, stabilize=stabilize,
+                     scheme=scheme)
         S, dS, d2S = _stage("angular", polar_swsh_values,
                             s, m[idx], lmin, np.asarray(coupling), lam,
                             g[idx], samples.thp)
@@ -466,7 +471,7 @@ def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
                              ndomains=150, nnodes=32, spacing="arcsinh7",
                              nsamples=2**10, ntheta=2**8, method="bilinear",
                              max_memory_gb=8.0, return_radial=True,
-                             stabilize=True):
+                             stabilize=True, scheme="ultraspherical"):
     """Solve a radiative (s = -2) generic-orbit mode table end to end.
 
     orbit: MiniGeo with e != 0 and |x| < 1. l, m, k, n: (B,) integers;
@@ -510,7 +515,8 @@ def solve_generic_mode_table(orbit, s, l, m, k, n, subdomains=None,
         lam = np.asarray(lam)
         hom = _stage("radial", solve_homogeneous_batch,
                      s, kappa, lam, m[idx] * a, omega[idx],
-                     subs_up, subs_in, n=nnodes, stabilize=stabilize)
+                     subs_up, subs_in, n=nnodes, stabilize=stabilize,
+                     scheme=scheme)
         S, dS, d2S = _stage("angular", polar_swsh_values,
                             s, m[idx], lmin, np.asarray(coupling), lam,
                             g[idx], samples.thp)

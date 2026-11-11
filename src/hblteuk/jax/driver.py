@@ -229,7 +229,8 @@ def _want_bucket(bucket):
 
 
 def _bucketed_solve(orbit, s, arr, nsamples, ntheta, max_memory_gb,
-                    pad, ndomains=150, nnodes=32, stabilize=True):
+                    pad, ndomains=150, nnodes=32, stabilize=True,
+                    scheme="ultraspherical"):
     """solve_modes with the batch padded to a bucket rung (pipeline._bucket,
     capped at the chunk size), so adaptive rounds reuse a small set of
     compiled traces. Padding rows are duplicates of real modes (kept valid)
@@ -239,7 +240,7 @@ def _bucketed_solve(orbit, s, arr, nsamples, ntheta, max_memory_gb,
     B = len(arr)
     kw = dict(nsamples=nsamples, ntheta=ntheta, ndomains=ndomains,
               nnodes=nnodes, max_memory_gb=max_memory_gb,
-              return_radial=False, stabilize=stabilize)
+              return_radial=False, stabilize=stabilize, scheme=scheme)
     if pad:
         csize = _chunk_size(max_memory_gb, nsamples, ndomains, nnodes,
                             stabilize)
@@ -420,7 +421,7 @@ class _Accum:
 def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
                  strategy="box", verbose=False, bucket="auto",
                  stabilize=True, k_cap=None, n_cap=None,
-                 max_modes=100_000, ndomains=32):
+                 max_modes=100_000, ndomains=32, scheme="ultraspherical"):
     """Adaptive staged-round flux driver. strategy="box" grows a full
     rectangular canonical (l, m, k, n) window; strategy="peak" grows four
     knobs (k_ext, n_ext, dm, dl) around the spectral ridges l ~ |m+k| and
@@ -445,6 +446,9 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     Teukolsky-Starobinsky, removing a ~1e-8 error floor. On by default;
     pass stabilize=False for the legacy path.
 
+    scheme selects the radial ODE rows ("ultraspherical" or "collocation",
+    teukolsky.solve_homogeneous_batch).
+
     ndomains is the radial subdomain count per branch. 32 is within 5e-12 of
     150 on 14 orbits at tol 1e-6 and about half the time (dev/JAX_PERF.md).
 
@@ -460,18 +464,19 @@ def total_fluxes(orbit, s=-2, tol=1e-6, lmax_cap=30, max_memory_gb=8.0,
     if strategy == "gradient":
         return _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb,
                                       verbose, pad, stabilize, k_cap, n_cap,
-                                      max_modes, ndomains)
+                                      max_modes, ndomains, scheme)
     if strategy == "peak":
         return _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb,
                                   verbose, pad, stabilize, k_cap, n_cap,
-                                  max_modes, ndomains)
+                                  max_modes, ndomains, scheme)
     return _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
-                             pad, stabilize, k_cap, n_cap, max_modes, ndomains)
+                             pad, stabilize, k_cap, n_cap, max_modes, ndomains,
+                             scheme)
 
 
 def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                       pad=False, stabilize=True, k_cap=None, n_cap=None,
-                      max_modes=100_000, ndomains=32):
+                      max_modes=100_000, ndomains=32, scheme="ultraspherical"):
     """Adaptive staged-round flux driver: grows a rectangular canonical
     (l, m, k, n) window in batched rounds until every axis' edge
     contribution < tol x running total per channel (l axis: last two
@@ -509,7 +514,7 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                 nsamples=max(2**9, _next_pow2(4 * n_half)),
                 ntheta=max(2**7, _next_pow2(4 * k_half)),
                 max_memory_gb=max_memory_gb, pad=pad, stabilize=stabilize,
-                ndomains=ndomains)
+                ndomains=ndomains, scheme=scheme)
             acc.merge(sol)
         elif not rounds:
             raise RuntimeError("empty initial window")
@@ -574,7 +579,8 @@ def _total_fluxes_box(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
 def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                        pad=False, stabilize=True, k_cap=None, n_cap=None,
-                       max_modes=100_000, ndomains=32):
+                       max_modes=100_000, ndomains=32,
+                       scheme="ultraspherical"):
     # iterate (l, m) naturally to lmax; band k, n around their (l, m)-peaks
     # with half-widths dk, dn. Three adaptive knobs. l uses the box two-slab
     # rule; dk/dn grow while their outermost offset shell contributes > tol.
@@ -597,7 +603,7 @@ def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                 nsamples=max(2**9, _next_pow2(4 * dn)),
                 ntheta=max(2**7, _next_pow2(4 * dk)),
                 max_memory_gb=max_memory_gb, pad=pad, stabilize=stabilize,
-                ndomains=ndomains)
+                ndomains=ndomains, scheme=scheme)
             acc.merge(sol)
         elif not rounds:
             raise RuntimeError("empty initial peak window")
@@ -680,7 +686,8 @@ def _total_fluxes_peak(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
 
 def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                            pad=False, stabilize=True, k_cap=None, n_cap=None,
-                           max_modes=100_000, ndomains=32):
+                           max_modes=100_000, ndomains=32,
+                           scheme="ultraspherical"):
     """Decay-predicted adaptive driver. Grows four directions (L, M, K, N),
     each to the extent its estimated geometric flux tail needs to fall under
     tol/n_dir of the per-channel total; stops on max(predicted_tail,
@@ -712,7 +719,7 @@ def _total_fluxes_gradient(orbit, s, tol, lmax_cap, max_memory_gb, verbose,
                 nsamples=max(2**9, _next_pow2(4 * max(dn, 1))),
                 ntheta=max(2**7, _next_pow2(4 * max(dk, 1))),
                 max_memory_gb=max_memory_gb, pad=pad, stabilize=stabilize,
-                ndomains=ndomains)
+                ndomains=ndomains, scheme=scheme)
             acc.merge(sol)
         elif not rounds:
             raise RuntimeError("empty initial gradient window")

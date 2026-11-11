@@ -122,7 +122,7 @@ def _ts_solve_core(coeffs_src, sub, kappa, s_target, lam, ma, omega, n, chtype,
 
 
 def ts_solve_batch(coeffs_src, subdomains, kappa, s_target, lam, ma, omega,
-                   n=32, chtype=1, renormalize=True, scheme="collocation"):
+                   n=32, chtype=1, renormalize=True, scheme="ultraspherical"):
     """Map a batched opposite-spin solution to s_target via Teukolsky-Starobinsky.
 
     coeffs_src: (B, D, n) Chebyshev coefficients of the *stable* solve, on the

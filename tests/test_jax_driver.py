@@ -546,3 +546,55 @@ def test_bucketed_solve_pads_to_ladder(monkeypatch):
                                32.0, pad=True, ndomains=32)
     cap = _chunk_size(32.0, 512, 32, 32, True)
     assert cap > 2000 and seen["B"] == _bucket(1038, cap) == 1280
+
+
+_SCHEME_TABLE = [(2, 2, 1, 1), (2, 1, -1, -1), (3, 3, 0, 2), (4, 2, 2, 0),
+                 (5, 4, -1, 3), (3, -2, 1, 1)]
+
+
+@pytest.mark.parametrize("kind", ["equatorial", "spherical", "generic",
+                                  "retrograde"])
+def test_scheme_default_and_agreement(kind, orb_ecc_eq, orb_sph, orb_gen):
+    # every solver path: the default is ultraspherical, and at 150 domains it
+    # agrees with collocation on resolved modes
+    orbit = {"equatorial": orb_ecc_eq, "spherical": orb_sph,
+             "generic": orb_gen,
+             "retrograde": MiniGeo(A, 10.0, 0.3, -0.6)}[kind]
+    l, m, k, n = (np.array(c) for c in zip(*_SCHEME_TABLE))
+    if kind == "equatorial":
+        k = 0 * k
+    if kind == "spherical":
+        n = 0 * n
+    kw = dict(nsamples=2**8, ntheta=2**6)
+    sol = {sc: solve_modes(orbit, -2, l, m, k, n, **kw, **(
+        {} if sc is None else dict(scheme=sc)))
+        for sc in (None, "ultraspherical", "collocation")}
+    np.testing.assert_array_equal(np.asarray(sol[None].amplitudes),
+                                  np.asarray(sol["ultraspherical"].amplitudes))
+    a_us = np.asarray(sol["ultraspherical"].amplitudes)
+    a_col = np.asarray(sol["collocation"].amplitudes)
+    ok = np.asarray(sol["collocation"].errors) < 1e-8
+    assert ok.sum() >= ok.size // 2, kind
+    rel = np.abs(a_us - a_col) / np.abs(a_col)
+    assert np.all(rel[ok] < 1e-10), (kind, rel[ok].max())
+
+
+@pytest.mark.parametrize("given,expected", [(None, "ultraspherical"),
+                                            ("collocation", "collocation")])
+def test_total_fluxes_passes_scheme_to_solver(monkeypatch, given, expected):
+    from hblteuk.jax import driver, total_fluxes
+
+    seen = {}
+
+    def fake(*a, **k):
+        seen.update(k)
+        raise _Stop
+
+    monkeypatch.setattr(driver, "solve_modes", fake)
+    kw = {} if given is None else dict(scheme=given)
+    for strategy in ("box", "peak", "gradient"):
+        seen.clear()
+        with pytest.raises(_Stop):
+            total_fluxes(MiniGeo(0.9, 10.0, 0.2, 0.7), tol=1e-2,
+                         strategy=strategy, **kw)
+        assert seen["scheme"] == expected, strategy
