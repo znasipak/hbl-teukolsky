@@ -108,3 +108,32 @@ def test_equation_rows_shape():
 
     z = jnp.linspace(-8.0, 2.0, 6)
     assert equation_rows(pqu, z[:-1], z[1:], 24).shape == (3, 5, 22, 24)
+
+
+def test_equation_rows_equal_operator_sum():
+    # rows are sum_j P_j A_j + (hQ)_j B_j + (h^2 U)_j C_j per domain, for
+    # complex cubic coefficients; pins any reformulation of the contraction
+    from hblteuk.jax.ultraspherical import (X_FIT, equation_rows, monomials,
+                                            operators)
+    rng = np.random.default_rng(7)
+    cP, cQ, cU = (rng.normal(size=(2, 4)) + 1j * rng.normal(size=(2, 4))
+                  for _ in range(3))
+
+    def pqu(z):
+        zp = z[None, :] ** jnp.arange(4)[:, None]            # (4, k)
+        return tuple(jnp.asarray(c) @ zp for c in (cP, cQ, cU))
+
+    n, z = 20, np.array([0.1, 0.5, 0.2])
+    got = np.asarray(equation_rows(pqu, jnp.asarray(z[:-1]),
+                                   jnp.asarray(z[1:]), n))
+    A, B, C = operators(n)
+    for d in range(2):
+        h, mid = 0.5 * (z[d + 1] - z[d]), 0.5 * (z[d + 1] + z[d])
+        x = mid + h * X_FIT
+        Pc, Qc, Uc = (monomials(np.polynomial.polynomial.polyval(x, c.T))
+                      for c in (cP, cQ, cU))
+        want = (np.einsum("bj,jrc->brc", Pc, A)
+                + np.einsum("bj,jrc->brc", h * Qc, B)
+                + np.einsum("bj,jrc->brc", h**2 * Uc, C))
+        np.testing.assert_allclose(got[:, d], want, rtol=0,
+                                   atol=1e-13 * np.abs(want).max())

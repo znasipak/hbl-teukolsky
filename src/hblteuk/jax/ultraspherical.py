@@ -62,6 +62,12 @@ def monomials(values):
     return values @ V_INV.T
 
 
+@functools.lru_cache(maxsize=None)
+def _stacked(n):
+    # (3 (DEG+1), (n-2) n): A, B, C rows flattened for one matrix product
+    return np.concatenate([o.reshape(o.shape[0], -1) for o in operators(n)])
+
+
 def equation_rows(pqu_fn, z0, z1, n):
     """(B, D, n-2, n) equation rows on subdomains [z0_d, z1_d] (either
     direction). pqu_fn(z (k,)) -> (P, Q, U) each (B, k), as for
@@ -70,8 +76,11 @@ def equation_rows(pqu_fn, z0, z1, n):
     zf = 0.5 * (z1 + z0)[:, None] + h[:, None] * jnp.asarray(X_FIT)
     P, Q, U = (x.swapaxes(0, 1) for x in jax.vmap(pqu_fn)(zf))     # (B, D, 4)
     Vt = jnp.asarray(V_INV.T)
-    A, B, C = (jnp.asarray(x) for x in operators(n))
     h = h[None, :, None]
-    return (jnp.einsum("bdj,jrc->bdrc", P @ Vt, A)
-            + jnp.einsum("bdj,jrc->bdrc", (h * Q) @ Vt, B)
-            + jnp.einsum("bdj,jrc->bdrc", (h**2 * U) @ Vt, C))
+    cf = jnp.concatenate([P @ Vt, (h * Q) @ Vt, (h**2 * U) @ Vt], axis=-1)
+    # one real GEMM per part: 3.5x faster than three complex einsums on H200
+    # (dev/ULTRASPHERICAL.md)
+    W = jnp.asarray(_stacked(n))
+    B, D = cf.shape[:2]
+    c2 = cf.reshape(B * D, -1)
+    return ((c2.real @ W) + 1j * (c2.imag @ W)).reshape(B, D, n - 2, n)
